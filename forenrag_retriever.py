@@ -74,7 +74,11 @@ def retrieve_rag_context(evidence_json_path, top_k=3):
 if __name__ == "__main__":
     # Default test file: latest JSON package in evidence_packages/
     evidence_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "evidence_packages")
-    json_files = [os.path.join(evidence_dir, f) for f in os.listdir(evidence_dir) if f.endswith(".json")]
+    json_files = []
+    for root, _, files in os.walk(evidence_dir):
+        for f in files:
+            if f.endswith(".json"):
+                json_files.append(os.path.join(root, f))
     
     if len(sys.argv) > 1:
         test_file = sys.argv[1]
@@ -84,5 +88,5 @@ if __name__ == "__main__":
         print("[!] No evidence JSON files found in evidence_packages/")
         sys.exit(1)
 
-    print(f"[+] Processing Evidence Package: {os.path.basename(test_file)}")
+    print(f"[+] Processing Evidence Package: {test_file}")
     retrieve_rag_context(test_file)

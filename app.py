@@ -1,10 +1,10 @@
 """
-ForenRAG Phase 3 Agent: Event-Driven Evidence Collector
---------------------------------------------------------
+ForenRAG Autonomous Telemetry Collector & RAG Reasoning Agent
+--------------------------------------------------------------
 Autonomous forensic collector that receives real-time Wazuh webhooks,
 consolidates attack sessions, traces Sysmon process trees via OpenSearch,
-and generates structured DFIR Evidence Package JSON files ONLY when High/Critical
-alerts (Wazuh Rule Level >= 12 / 15) fire.
+generates structured DFIR Evidence Packages (JSON), and automatically
+triggers Phase 4 (ChromaDB RAG) & Phase 5 (Ollama Reasoning) report generation.
 """
 
 import os
@@ -72,7 +72,6 @@ def trace_process_tree(initial_guid, max_depth=5):
     if not initial_guid: return []
     visited, process_nodes, queue = set(), [], [(initial_guid, 0)]
     
-    # Generic OS processes whose sibling children should NOT be expanded
     GENERIC_SHELLS = ["explorer.exe", "svchost.exe", "lsass.exe", "services.exe", "winlogon.exe", "csrss.exe", "userinit.exe"]
     
     while queue:
@@ -80,7 +79,6 @@ def trace_process_tree(initial_guid, max_depth=5):
         if guid in visited or depth > max_depth: continue
         visited.add(guid)
         
-        # Query Event ID 1 (Process Create)
         q = {"query": {"bool": {"must": [{"term": {"agent.id": "002"}}, {"term": {"data.win.system.eventID": "1"}}, {"query_string": {"default_field": "data.win.eventdata.processGuid", "query": f'"{guid}"'}}]}}, "size": 1}
         res = query_opensearch("wazuh-archives-*", q)
         hits = res.get("hits", {}).get("hits", [])
@@ -100,11 +98,9 @@ def trace_process_tree(initial_guid, max_depth=5):
                 "timestamp": hits[0]["_source"].get("timestamp")
             })
             
-            # 1. Walk UP to Parent Process
             parent = ev.get("parentProcessGuid")
             if parent and parent not in visited: queue.append((parent, depth + 1))
             
-            # 2. Walk DOWN to Child Processes (Only if NOT a generic system shell like explorer.exe)
             if not any(sh in img for sh in GENERIC_SHELLS):
                 cq = {"query": {"bool": {"must": [{"term": {"agent.id": "002"}}, {"term": {"data.win.system.eventID": "1"}}, {"query_string": {"default_field": "data.win.eventdata.parentProcessGuid", "query": f'"{guid}"'}}]}}, "size": 20}
                 c_res = query_opensearch("wazuh-archives-*", cq)
@@ -118,13 +114,11 @@ def collect_artifacts(guids):
     """Correlates File Creations (EID 11) and Registry Set Values (EID 13)."""
     files, registry = [], []
     for g in guids:
-        # File Create (EID 11)
         fq = {"query": {"bool": {"must": [{"term": {"agent.id": "002"}}, {"term": {"data.win.system.eventID": "11"}}, {"query_string": {"default_field": "data.win.eventdata.processGuid", "query": f'"{g}"'}}]}}, "size": 10}
         for hit in query_opensearch("wazuh-archives-*", fq).get("hits", {}).get("hits", []):
             ev = hit["_source"].get("data", {}).get("win", {}).get("eventdata", {})
             files.append({"process_guid": g, "image": ev.get("image"), "target_filename": ev.get("targetFilename"), "timestamp": hit["_source"].get("timestamp")})
             
-        # Registry Value Set (EID 13)
         rq = {"query": {"bool": {"must": [{"term": {"agent.id": "002"}}, {"term": {"data.win.system.eventID": "13"}}, {"query_string": {"default_field": "data.win.eventdata.processGuid", "query": f'"{g}"'}}]}}, "size": 10}
         for hit in query_opensearch("wazuh-archives-*", rq).get("hits", {}).get("hits", []):
             ev = hit["_source"].get("data", {}).get("win", {}).get("eventdata", {})
@@ -133,7 +127,7 @@ def collect_artifacts(guids):
     return {"file_creations": files, "registry_sets": registry}
 
 # ---------------------------------------------------------------------------
-# 3. Session Consolidation & Evidence Package Assembly
+# 3. Session Consolidation, Subfolder Creation & Automated RAG Pipeline
 # ---------------------------------------------------------------------------
 def finalize_session(parent_guid):
     with bucket_lock:
@@ -160,12 +154,34 @@ def finalize_session(parent_guid):
         "all_session_alerts": alerts
     }
     
+    # Sequential Incident ID Prefix: 001_incident_YYYYMMDD_HHMMSS_<MITRE_ID>
+    existing_dirs = [d for d in os.listdir(OUTPUT_DIR) if os.path.isdir(os.path.join(OUTPUT_DIR, d))]
+    next_idx = len(existing_dirs) + 1
+    
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    filepath = os.path.join(OUTPUT_DIR, f"evidence_pkg_{ts}_{parent_guid[:8]}.json")
+    mitre_ids = primary_alert.get("mitre_id", [])
+    mitre_suffix = f"_{mitre_ids[0]}" if mitre_ids else ""
+    folder_name = f"{next_idx:03d}_incident_{ts}{mitre_suffix}"
+    
+    incident_dir = os.path.join(OUTPUT_DIR, folder_name)
+    os.makedirs(incident_dir, exist_ok=True)
+    
+    filepath = os.path.join(incident_dir, "evidence.json")
     with open(filepath, "w") as f: json.dump(package, f, indent=2)
         
     print(f"[✔] Generated Evidence Package: {filepath}")
     print(f"    - Nodes: {len(tree)} | Files: {len(artifacts['file_creations'])} | Registry: {len(artifacts['registry_sets'])} | Latency: {package['collection_latency_seconds']}s")
+
+    # AUTOMATED PIPELINE: Automatically trigger Phase 4 RAG & Phase 5 Ollama Reasoning in background thread
+    def run_automated_pipeline():
+        try:
+            print(f"[+] Automatically executing RAG & Ollama reasoning for {folder_name}...")
+            from forenrag_reasoner import generate_forensic_report
+            generate_forensic_report(filepath)
+        except Exception as e:
+            print(f"[!] Error executing automated RAG reasoning pipeline: {e}")
+
+    threading.Thread(target=run_automated_pipeline, daemon=True).start()
 
 # ---------------------------------------------------------------------------
 # 4. Real-Time Webhook Listener
@@ -176,7 +192,6 @@ def handle_wazuh_alert():
     rule = data.get("rule", {})
     rule_level = int(rule.get("level", 0))
 
-    # FILTER BY SEVERITY: Ignore any alerts below MIN_RULE_LEVEL
     if rule_level < MIN_RULE_LEVEL:
         return jsonify({"status": "ignored", "reason": f"Rule level {rule_level} below threshold ({MIN_RULE_LEVEL})"}), 200
 
@@ -184,7 +199,6 @@ def handle_wazuh_alert():
     process_guid = ev.get("processGuid")
     parent_guid = ev.get("parentProcessGuid") or process_guid or "global_session"
     
-    # Filter benign PSScriptPolicyTest OS checks if no commandLine is attached
     target_file = ev.get("targetFilename", "")
     if "__PSScriptPolicyTest" in target_file and not ev.get("commandLine"):
         return jsonify({"status": "ignored", "reason": "Benign PSScriptPolicyTest check"}), 200
@@ -223,7 +237,6 @@ def status(): return jsonify({"status": "running", "min_rule_level": MIN_RULE_LE
 processed_alert_ids = set()
 
 def seed_existing_alerts():
-    """Seed processed_alert_ids with existing alert IDs so past alerts are not re-processed."""
     try:
         q = {
             "query": {
@@ -245,7 +258,6 @@ def seed_existing_alerts():
         print(f"[!] Error seeding alert IDs: {e}")
 
 def start_opensearch_poller():
-    """Background thread that polls wazuh-alerts-* every 3s for critical alerts (level >= MIN_RULE_LEVEL)."""
     print(f"[+] Starting Live OpenSearch Alerts Poller Thread (Filtering Level >= {MIN_RULE_LEVEL})...")
     seed_existing_alerts()
     while True:
@@ -309,7 +321,7 @@ def start_opensearch_poller():
 
 if __name__ == '__main__':
     print(f"==================================================")
-    print(f"   ForenRAG Phase 3 Autonomous Agent")
+    print(f"   ForenRAG Automated Autonomous Agent")
     print(f"   Severity Filter: Wazuh Rule Level >= {MIN_RULE_LEVEL}")
     print(f"   Listening on: http://0.0.0.0:5000/alert")
     print(f"==================================================")
