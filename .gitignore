@@ -1,0 +1,20 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv/
+
+# Research documentation (local)
+docs/
+
+# Vector database storage (local generated)
+chroma_db_storage/
+
+# Evidence Packages: Keep folder structure tracked, ignore laboratory generated files
+evidence_packages/*
+!evidence_packages/.gitkeep
