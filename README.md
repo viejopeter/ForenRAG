@@ -32,6 +32,7 @@ The experimental research laboratory comprises three distinct system components:
 |                                                      |  - Session Bucket Consolidation Engine  |  |
 |                                                      |  - Evidence Package Builder (JSON)      |  |
 |                                                      |  - ChromaDB RAG Engine (Phase 4)        |  |
+|                                                      |  - Ollama Reasoning Engine (Phase 5)    |  |
 |                                                      +-----------------------------------------+  |
 |                                                                                                   |
 +---------------------------------------------------------------------------------------------------+
@@ -54,17 +55,19 @@ The experimental research laboratory comprises three distinct system components:
 
 ### 3. ForenRAG Machine (Code Host & Analysis Engine)
 * **Dedicated Host Machine**: Runs the core ForenRAG codebase.
-* **Autonomous Evidence Collector (`app.py`)**:
+* **Autonomous Telemetry Collector (`app.py`)**:
   * **Flask Webhook Listener**: Listens on `http://0.0.0.0:5000/alert` for real-time Wazuh webhooks.
   * **OpenSearch Live Poller**: Asynchronously polls `wazuh-alerts-*` every 3 seconds for critical alerts meeting the threshold ($\text{Rule Level} \ge 12$).
   * **5-Second Dynamic Settling Window**: Aggregates sequential attack actions into a single consolidated attack session bucket using `parentProcessGuid`.
   * **Process Lineage Tracing**: Recursively queries Sysmon EID 1 records from OpenSearch (`wazuh-archives-*`) up to depth 5 to construct full parent-child execution trees while filtering desktop shell noise (`explorer.exe`, `userinit.exe`).
   * **Artifact Fusion**: Fuses process execution trees with file drops (EID 11) and registry edits (EID 13).
-  * **Evidence Packages**: Output to `./evidence_packages/` as standardized JSON packages.
+  * **Sequential Subfolder Output**: Saves evidence packages into clean, indexed subfolders inside `./evidence_packages/XXX_incident_YYYYMMDD_HHMMSS_<MITRE_ID>/`.
 * **Knowledge Retrieval Engine (RAG - Phase 4)**:
   * **Knowledge Base (`knowledge_base/`)**: Contains 9 official open-source threat intelligence documents from Red Canary Atomic Red Team and the LOLBAS project.
   * **ChromaDB Indexer (`build_chroma_db.py`)**: Chunks text and computes 768-dimensional vector embeddings via local Ollama `nomic-embed-text`, storing them in `./chroma_db_storage`.
   * **RAG Retriever (`forenrag_retriever.py`)**: Extracts telemetry parameters from Phase 3 JSON evidence packages and executes cosine similarity searches against ChromaDB.
+* **Explainable AI Reasoning Engine (Phase 5)**:
+  * **Reasoning Script (`forenrag_reasoner.py`)**: Combines structured Sysmon JSON evidence + ChromaDB retrieved RAG context, invoking local Ollama (`gemma4:e2b`) to generate a 5-section explainable DFIR investigation report (`forensic_report.md`).
 
 ---
 
@@ -73,13 +76,15 @@ The experimental research laboratory comprises three distinct system components:
 - [x] **Phase 1: Lab Environment & Monitoring Infrastructure Setup**
   * Windows 11 Victim VM + Ubuntu Security Server setup with Sysmon & Wazuh.
 - [x] **Phase 2: Adversary Emulation & Manual Baseline Tracking**
-  * Emulated attack scenarios (SAM Hive Dump `T1003.002`, Tool Transfer `T1105`, Scheduled Tasks `T1053.005`) and measured manual SOC analyst triage baseline.
+  * Emulated attack scenarios (SAM Hive Dump `T1003.002`, Tool Transfer `T1105`, Scheduled Tasks `T1053.005`) and measured manual SOC analyst triage baseline (average $33.1\text{ mins}$).
 - [x] **Phase 3: Autonomous Event-Driven Evidence Collector**
-  * Built `app.py` Flask listener and OpenSearch poller engine generating standardized JSON evidence packages.
+  * Built `app.py` Flask listener and OpenSearch poller engine generating structured JSON evidence packages.
 - [x] **Phase 4: Knowledge Retrieval Engine (RAG)**
   * On-premise vector store indexing threat intelligence, LOLBAS binaries, and DFIR playbooks with ChromaDB and Ollama `nomic-embed-text`.
-- [ ] **Phase 5: Explainable LLM Reasoning & Incident Reporting** *(Upcoming)*
-  * Local Ollama reasoning pipeline generating explainable DFIR investigation reports.
+- [x] **Phase 5: Explainable LLM Reasoning & Incident Reporting**
+  * Local Ollama reasoning pipeline generating explainable DFIR investigation reports (`forenrag_reasoner.py`).
+- [ ] **Phase 6: Framework Evaluation & Performance Benchmarking** *(Upcoming)*
+  * Live scenario evaluation comparing automated ForenRAG latency against manual SOC baseline.
 
 ---
 
@@ -104,8 +109,8 @@ uv sync
 
 ## 🚀 Execution & Usage Guide
 
-### 1. Run the Autonomous Evidence Collector Agent (Phase 3)
-Start the Flask alert listener and OpenSearch live poller:
+### 1. Run the Complete Automated Pipeline Agent (Phases 3, 4 & 5)
+Start the autonomous alert listener and OpenSearch poller agent. Whenever a High/Critical alert fires (Rule Level $\ge 12$), it automatically collects telemetry, queries ChromaDB, and generates an explainable DFIR report in seconds:
 ```bash
 uv run python app.py
 ```
@@ -116,12 +121,14 @@ Index the knowledge base documents from `./knowledge_base/` into ChromaDB:
 uv run python build_chroma_db.py
 ```
 
-### 3. Run the RAG Knowledge Retriever (Phase 4)
-Query ChromaDB using the latest generated JSON evidence package:
+### 3. Run RAG Knowledge Retrieval Standalone (Phase 4)
+Query ChromaDB using an evidence JSON package:
 ```bash
 uv run python forenrag_retriever.py
 ```
-*Or specify a particular evidence JSON file:*
+
+### 4. Run Explainable LLM Report Generation Standalone (Phase 5)
+Generate a forensic report for an existing evidence package using local Ollama `gemma4:e2b`:
 ```bash
-uv run python forenrag_retriever.py evidence_packages/evidence_pkg_20260723_044950_\{96c2e71.json
+uv run python forenrag_reasoner.py
 ```
