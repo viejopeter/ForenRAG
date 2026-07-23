@@ -31,6 +31,7 @@ The experimental research laboratory comprises three distinct system components:
 |                                                      |  - OpenSearch Live Alerts Poller        |  |
 |                                                      |  - Session Bucket Consolidation Engine  |  |
 |                                                      |  - Evidence Package Builder (JSON)      |  |
+|                                                      |  - ChromaDB RAG Engine (Phase 4)        |  |
 |                                                      +-----------------------------------------+  |
 |                                                                                                   |
 +---------------------------------------------------------------------------------------------------+
@@ -60,6 +61,10 @@ The experimental research laboratory comprises three distinct system components:
   * **Process Lineage Tracing**: Recursively queries Sysmon EID 1 records from OpenSearch (`wazuh-archives-*`) up to depth 5 to construct full parent-child execution trees while filtering desktop shell noise (`explorer.exe`, `userinit.exe`).
   * **Artifact Fusion**: Fuses process execution trees with file drops (EID 11) and registry edits (EID 13).
   * **Evidence Packages**: Output to `./evidence_packages/` as standardized JSON packages.
+* **Knowledge Retrieval Engine (RAG - Phase 4)**:
+  * **Knowledge Base (`knowledge_base/`)**: Contains 9 official open-source threat intelligence documents from Red Canary Atomic Red Team and the LOLBAS project.
+  * **ChromaDB Indexer (`build_chroma_db.py`)**: Chunks text and computes 768-dimensional vector embeddings via local Ollama `nomic-embed-text`, storing them in `./chroma_db_storage`.
+  * **RAG Retriever (`forenrag_retriever.py`)**: Extracts telemetry parameters from Phase 3 JSON evidence packages and executes cosine similarity searches against ChromaDB.
 
 ---
 
@@ -71,8 +76,8 @@ The experimental research laboratory comprises three distinct system components:
   * Emulated attack scenarios (SAM Hive Dump `T1003.002`, Tool Transfer `T1105`, Scheduled Tasks `T1053.005`) and measured manual SOC analyst triage baseline.
 - [x] **Phase 3: Autonomous Event-Driven Evidence Collector**
   * Built `app.py` Flask listener and OpenSearch poller engine generating standardized JSON evidence packages.
-- [ ] **Phase 4: Knowledge Retrieval Engine (RAG)** *(Next Step)*
-  * On-premise vector store indexing threat intelligence, LOLBAS binaries, and DFIR playbooks.
+- [x] **Phase 4: Knowledge Retrieval Engine (RAG)**
+  * On-premise vector store indexing threat intelligence, LOLBAS binaries, and DFIR playbooks with ChromaDB and Ollama `nomic-embed-text`.
 - [ ] **Phase 5: Explainable LLM Reasoning & Incident Reporting** *(Upcoming)*
   * Local Ollama reasoning pipeline generating explainable DFIR investigation reports.
 
@@ -95,36 +100,28 @@ cd /home/codeinfra/projects/research/ForenRAG
 uv sync
 ```
 
-### 3. Add New Project Dependencies (Extremely Fast)
-To add a new library to the environment (e.g. `flask`):
-```bash
-uv add flask
-```
-
-### 4. Run Scripts inside the `uv` Environment
-You can run any script inside the virtual environment without manually activating it by prefixing with `uv run`:
-```bash
-uv run python app.py
-```
-*Or manually activate the virtual environment:*
-```bash
-source .venv/bin/activate
-python app.py
-```
-
 ---
 
-## 🚀 How to Run the Current Collector Agent
+## 🚀 Execution & Usage Guide
 
-### 1. Start the Autonomous Collector Agent
-Run `app.py` from the project root directory:
+### 1. Run the Autonomous Evidence Collector Agent (Phase 3)
+Start the Flask alert listener and OpenSearch live poller:
 ```bash
 uv run python app.py
 ```
 
-### 2. Verify Server Status
-Check if the ForenRAG agent is running by visiting:
+### 2. Build / Update the ChromaDB Vector Store (Phase 4)
+Index the knowledge base documents from `./knowledge_base/` into ChromaDB:
 ```bash
-curl http://127.0.0.1:5000/status
+uv run python build_chroma_db.py
 ```
-*Expected Output*: `{"min_rule_level": 12, "output_dir": ".../evidence_packages", "status": "running"}`
+
+### 3. Run the RAG Knowledge Retriever (Phase 4)
+Query ChromaDB using the latest generated JSON evidence package:
+```bash
+uv run python forenrag_retriever.py
+```
+*Or specify a particular evidence JSON file:*
+```bash
+uv run python forenrag_retriever.py evidence_packages/evidence_pkg_20260723_044950_\{96c2e71.json
+```
