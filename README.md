@@ -4,7 +4,7 @@
 
 **ForenRAG** is an academic research framework designed to automate post-detection digital forensic evidence collection, context correlation, and report synthesis following cyber intrusion alerts. Modern Intrusion Detection Systems (IDS) and SIEM platforms flood Security Operations Centers (SOCs) with thousands of alerts daily, requiring human analysts to manually trace parent-child process trees, cross-reference registry/file modifications, and write incident reports—a process taking over 33 minutes per alert.
 
-ForenRAG bridges threat detection and digital forensics by automatically capturing, correlating, and structuring forensic evidence immediately after a high-severity alert fires (Wazuh Rule Level $\ge 12$). Utilizing a local vector store (ChromaDB) and local LLM reasoning (Ollama `gemma4:e2b`), ForenRAG reduces post-detection triage latency from **33 minutes 08 seconds down to 12.35 seconds** (**99.38% operational time reduction**) with **0.0% hallucination rate**.
+ForenRAG bridges threat detection and digital forensics by automatically capturing, correlating, and structuring forensic evidence immediately after a high-severity alert fires (Wazuh Rule Level $\ge 12$). Utilizing a local vector store (ChromaDB) and local LLM reasoning (Ollama `gemma4:e2b`), ForenRAG reduces post-detection triage latency from **33 minutes 08 seconds down to 12.35 seconds** (**99.38% operational time reduction**) with **zero unverified entity artifacts across evaluated benchmark trials**.
 
 ---
 

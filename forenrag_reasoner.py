@@ -15,7 +15,7 @@ from forenrag_retriever import retrieve_rag_context
 DEFAULT_MODEL = "gemma4:e2b"
 
 def format_evidence_summary(pkg):
-    """Formats raw Sysmon JSON payload into structured text blocks for zero-hallucination LLM reasoning."""
+    """Formats raw Sysmon JSON payload into structured text blocks for strictly grounded telemetry LLM reasoning."""
     alert = pkg.get("trigger_alert", {})
     tree = pkg.get("process_tree", [])
     artifacts = pkg.get("artifacts", {})
