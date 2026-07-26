@@ -10,7 +10,7 @@ ForenRAG bridges threat detection and digital forensics by automatically capturi
 
 ## 🖥️ System Architecture & Laboratory Topology
 
-The experimental research laboratory comprises three distinct system components:
+The experimental research laboratory comprises three distinct physical and virtualized system nodes operating in a closed-loop topology:
 
 ```
 +---------------------------------------------------------------------------------------------------+
@@ -19,43 +19,98 @@ The experimental research laboratory comprises three distinct system components:
 |                                                                                                   |
 |  +-------------------------------------+   Sysmon Telemetry  +---------------------------------+  |
 |  |     VM 1: Windows 11 Victim Client  | ------------------->|  VM 2: Ubuntu Security Server   |  |
-|  |  - Sysmon v15.0 (EID 1, 11, 13)       |    Port 1514/1515    |  - Wazuh Manager v4.7           |  |
+|  |  - Sysmon v15.0 (EID 1, 11, 13)       |    TLS Port 1514    |  - Wazuh Manager v4.7           |  |
 |  |  - Wazuh Agent v4.7 (Agent ID: 002)   |                     |  - OpenSearch Indexer (:9200)   |  |
 |  +-------------------------------------+                     +---------------------------------+  |
-|                                                                              |                    |
-|                                                                 Wazuh Alerts | (Level >= 12)      |
-|                                                                              v                    |
+|                                                                    |              |               |
+|                                                     Wazuh Webhook  |              | REST API      |
+|                                                    (POST /alert)   |              | Queries       |
+|                                                    Rule Level >= 12|              | (Port 9200)   |
+|                                                                    v              v               |
 |                                                      +-----------------------------------------+  |
 |                                                      |  ForenRAG Host (Code Analysis Engine)   |  |
 |                                                      |  - Flask Alert Listener (app.py :5000)   |  |
-|                                                      |  - OpenSearch Live Alerts Poller        |  |
+|                                                      |  - OpenSearch Live Alerts & Graph Poller|  |
 |                                                      |  - Session Bucket Consolidation Engine  |  |
 |                                                      |  - ChromaDB Vector Store (Phase 4)      |  |
-|                                                      |  - Ollama Reasoning Engine (Phase 5)    |  |
+|                                                      |  - Local Ollama Engine (gemma4:e2b)     |  |
 |                                                      +-----------------------------------------+  |
 |                                                                                                   |
 +---------------------------------------------------------------------------------------------------+
 ```
 
-### Component Breakdown
-1. **VM 1: Windows 11 Victim Client**:
-   * **OS**: Windows 11 Enterprise (64-bit).
-   * **Sysmon v15.0**:
-     * `Event ID 1`: Process Creation (Process GUIDs, Parent GUIDs, CLI arguments, SHA256/IMPHASH).
-     * `Event ID 11`: File Creation (`%TEMP%`, `AppData\Local\Temp`).
-     * `Event ID 13`: Registry Modifications (`HKLM\...\Run`, `HKLM\...\TaskCache\Tree`).
-   * **Wazuh Agent v4.7**: Streams Sysmon events to Wazuh Manager over Ports 1514/1515.
+### 📊 End-to-End Data Flow Sequence
 
-2. **VM 2: Ubuntu Security Server**:
-   * **Wazuh Manager v4.7**: Ingests Sysmon logs, decodes telemetry, and tags alerts with rule levels (0–15).
-   * **OpenSearch Indexer Engine (:9200)**:
-     * `wazuh-alerts-*`: High-level intrusion alerts.
-     * `wazuh-archives-*`: Raw Sysmon event logs required for process tree tracing.
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Win11 as VM 1: Windows 11 Client (Sysmon)
+    participant Wazuh as VM 2: Wazuh Manager (v4.7)
+    participant OS as VM 2: OpenSearch Indexer (:9200)
+    participant App as ForenRAG Host: app.py (:5000)
+    participant Chroma as ChromaDB Vector Store
+    participant Ollama as Local Ollama LLM (gemma4:e2b)
 
-3. **ForenRAG Analysis Host (Code Engine)**:
-   * **Python Environment**: `uv` package manager with Python 3.10+.
-   * **Ollama Server**: On-premise AI inference runner for embedding and reasoning models.
-   * **ChromaDB**: On-premise vector database (`./chroma_db_storage`).
+    Win11->>Wazuh: Stream Sysmon Events (EID 1, 11, 13) via TLS 1514
+    Wazuh->>OS: Index raw logs to wazuh-archives-* & alerts to wazuh-alerts-*
+    alt Push Trigger (HTTP Webhook)
+        Wazuh->>App: HTTP POST /alert (Rule Level >= 12)
+    else Pull Trigger (Periodic 3s Poller)
+        App->>OS: Query wazuh-alerts-* (Rule Level >= 12, last 2 mins)
+    end
+    App->>App: Group events into 5.0s Dynamic Settling Window (by parentProcessGuid)
+    App->>OS: Recursive Lineage Search on wazuh-archives-* (Sysmon EID 1, depth <= 5)
+    App->>OS: Correlate File (EID 11) & Registry (EID 13) Artifacts
+    App->>App: Emit Standardized Evidence Package (evidence.json)
+    App->>Chroma: Query nomic-embed-text vector store (Top-3 threat intel passages)
+    Chroma-->>App: Return MITRE ATT&CK & LOLBAS context
+    App->>Ollama: Invoke low-temp (T=0.1) inference with grounded telemetry context
+    Ollama-->>App: Synthesize 5-section DFIR Report (forensic_report.md)
+```
+
+---
+
+### Component Breakdown & Network Specification
+
+#### 1. VM 1: Windows 11 Victim Client (Target Node)
+* **OS**: Windows 11 Enterprise (64-bit).
+* **Sysmon v15.0 Telemetry Instrumentation**:
+  * `Event ID 1`: Process Creation (Captures 128-bit `processGuid`, `parentProcessGuid`, CLI parameters, User SIDs, Integrity levels, MD5/SHA256/IMPHASH).
+  * `Event ID 11`: File Creation (Monitors `%TEMP%` and `AppData\Local\Temp` payload drops).
+  * `Event ID 13`: Registry Value Modifications (Monitors autorun keys `HKLM\...\Run`, `HKU\...\Run`, and Scheduled Task caches).
+* **Wazuh Agent v4.7 (Agent ID: 002)**: Encrypts and streams Sysmon events to the Security Server over TLS (Ports 1514/1515).
+
+#### 2. VM 2: Ubuntu Security Server (SIEM & Search Engine)
+* **Wazuh Manager v4.7**: Decodes incoming Sysmon telemetry, evaluates intrusion rules, assigns threat levels (0–15), and triggers automated integrations.
+* **OpenSearch Indexer Engine (`https://10.209.42.103:9200`)**:
+  * `wazuh-alerts-*`: Stores high-level intrusion alerts for initial detection.
+  * `wazuh-archives-*`: Stores raw Sysmon event logs required for multi-hop process graph correlation.
+* **Wazuh Webhook Integration Configuration (`/var/ossec/etc/ossec.conf`)**:
+  ```xml
+  <ossec_config>
+    <integration>
+      <name>custom-webhook</name>
+      <hook_url>http://<FORENRAG_HOST_IP>:5000/alert</hook_url>
+      <level>12</level>
+      <alert_format>json</alert_format>
+    </integration>
+  </ossec_config>
+  ```
+
+#### 3. ForenRAG Analysis Host (Autonomous Analysis Engine)
+* **Python Runtime Environment**: Managed via `uv` package manager (Python 3.10+).
+* **Dual-Trigger Collector (`app.py`)**: Runs Flask web server (`:5000/alert`) and OpenSearch poller thread simultaneously.
+* **ChromaDB Vector Store (`./chroma_db_storage`)**: Embedded local vector database indexing Red Canary and LOLBAS playbooks using `nomic-embed-text` (768-dimensional, 8,192 token context).
+* **Local Ollama Inference Server**: Runs `gemma4:e2b` (7.2B parameters) at low temperature ($T=0.1$) for zero-hallucination DFIR report generation.
+
+---
+
+### Dual-Channel Ingestion Matrix
+
+| Ingestion Channel | Direction | Protocol & Endpoint | Primary Purpose | Resiliency Role |
+| :--- | :--- | :--- | :--- | :--- |
+| **Push Channel (Webhook)** | Wazuh Manager $\rightarrow$ ForenRAG Host | `HTTP POST http://0.0.0.0:5000/alert` | Real-time sub-second alert trigger | Sub-second real-time alert intake |
+| **Pull Channel (REST API)** | ForenRAG Host $\rightarrow$ OpenSearch Indexer | `HTTPS POST https://10.209.42.103:9200` | Polling `wazuh-alerts-*` & querying `wazuh-archives-*` | Fault-tolerant backup poller + raw Sysmon graph correlation |
 
 ---
 
