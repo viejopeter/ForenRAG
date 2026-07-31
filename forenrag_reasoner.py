@@ -8,6 +8,7 @@ and feeds it into local Ollama via LangChain to generate an explainable DFIR rep
 import os
 import json
 import sys
+import time
 from langchain_ollama import OllamaLLM
 from langchain_core.prompts import PromptTemplate
 from forenrag_retriever import retrieve_rag_context
@@ -52,6 +53,7 @@ def generate_forensic_report(evidence_json_path, model_name=DEFAULT_MODEL):
     if not os.path.exists(evidence_json_path):
         raise FileNotFoundError(f"Evidence JSON file not found: {evidence_json_path}")
 
+    start_t = time.time()
     print(f"\n==================================================")
     print(f"   ForenRAG Phase 5 Investigation Reasoning Engine")
     print(f"   Target Evidence Package: {evidence_json_path}")
@@ -108,6 +110,17 @@ FORENSIC REPORT:"""
     print("==================================================\n")
     print(response)
 
+    reasoning_latency = round(time.time() - start_t, 3)
+    coll_latency = pkg.get("collection_latency_seconds", 0.0)
+    total_latency = round(coll_latency + reasoning_latency, 3)
+
+    metrics_footer = f"\n\n---\n\n### 📊 Experimental Benchmark Latency Metrics\n" \
+                     f"* **Collection Latency ($L_{{\\text{{coll}}}}$):** `{coll_latency}` seconds\n" \
+                     f"* **Reasoning Latency ($L_{{\\text{{reason}}}}$):** `{reasoning_latency}` seconds\n" \
+                     f"* **Total ForenRAG Latency ($T_{{\\text{{automated}}}}$):** `{total_latency}` seconds\n"
+
+    full_report_content = response + metrics_footer
+
     # Step 4: Save Report Artifact in same directory as evidence JSON
     if os.path.basename(evidence_json_path) == "evidence.json":
         output_report_path = os.path.join(os.path.dirname(evidence_json_path), "forensic_report.md")
@@ -115,10 +128,18 @@ FORENSIC REPORT:"""
         output_report_path = evidence_json_path.replace(".json", "_report.md")
 
     with open(output_report_path, "w", encoding="utf-8") as f:
-        f.write(response)
+        f.write(full_report_content)
 
     print(f"\n[✔] Saved Report Artifact to: {output_report_path}")
-    return response
+
+    print(f"\n==================================================")
+    print(f"   📊 EXPERIMENTAL BENCHMARK LATENCY METRICS")
+    print(f"   - Collection Latency (L_coll)  : {coll_latency}s")
+    print(f"   - Reasoning Latency (L_reason) : {reasoning_latency}s")
+    print(f"   - Total ForenRAG Latency       : {total_latency}s")
+    print(f"==================================================\n")
+
+    return full_report_content
 
 if __name__ == "__main__":
     evidence_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "evidence_packages")
