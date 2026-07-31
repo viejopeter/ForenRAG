@@ -292,6 +292,10 @@ def start_opensearch_poller():
                 rule = src.get("rule", {})
                 rule_level = rule.get("level", 0)
                 
+                target_file = ev.get("targetFilename", "")
+                if "__PSScriptPolicyTest" in target_file and not cmd:
+                    continue
+
                 alert_summary = {
                     "timestamp": src.get("timestamp"),
                     "rule_id": rule.get("id"),
