@@ -94,7 +94,7 @@ FORENSIC REPORT:"""
     )
 
     print(f"\n[+] Invoking Ollama LLM Model '{model_name}' via LangChain...")
-    llm = OllamaLLM(model=model_name, temperature=0.1)
+    llm = OllamaLLM(model=model_name, temperature=0.1, num_ctx=8192, num_predict=4096)
 
     formatted_prompt = prompt.format(
         evidence_text=evidence_text,
