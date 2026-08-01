@@ -82,7 +82,7 @@ sequenceDiagram
 
 #### 2. VM 2: Ubuntu Security Server (SIEM & Search Engine)
 * **Wazuh Manager v4.7**: Decodes incoming Sysmon telemetry, evaluates intrusion rules, assigns threat levels (0–15), and triggers automated integrations.
-* **OpenSearch Indexer Engine (`https://10.209.42.103:9200`)**:
+* **OpenSearch Indexer Engine (`OPENSEARCH_URL` / `https://<OPENSEARCH_IP>:9200`)**:
   * `wazuh-alerts-*`: Stores high-level intrusion alerts for initial detection.
   * `wazuh-archives-*`: Stores raw Sysmon event logs required for multi-hop process graph correlation.
 * **Wazuh Webhook Integration Configuration (`/var/ossec/etc/ossec.conf`)**:
@@ -98,7 +98,7 @@ sequenceDiagram
   ```
 
 #### 3. ForenRAG Analysis Host (Autonomous Analysis Engine)
-* **Python Runtime Environment**: Managed via `uv` package manager (Python 3.10+).
+* **Python Runtime Environment**: Managed via `uv` package manager (Python 3.10+) with `python-dotenv` environment configuration.
 * **Dual-Trigger Collector (`app.py`)**: Runs Flask web server (`:5000/alert`) and OpenSearch poller thread simultaneously.
 * **ChromaDB Vector Store (`./chroma_db_storage`)**: Embedded local vector database indexing Red Canary and LOLBAS playbooks using `nomic-embed-text` (768-dimensional, 8,192 token context).
 * **Local Ollama Inference Server**: Runs `gemma4:e2b` (7.2B parameters) at low temperature ($T=0.1$) for zero-hallucination DFIR report generation.
@@ -110,7 +110,7 @@ sequenceDiagram
 | Ingestion Channel | Direction | Protocol & Endpoint | Primary Purpose | Resiliency Role |
 | :--- | :--- | :--- | :--- | :--- |
 | **Push Channel (Webhook)** | Wazuh Manager $\rightarrow$ ForenRAG Host | `HTTP POST http://0.0.0.0:5000/alert` | Real-time sub-second alert trigger | Sub-second real-time alert intake |
-| **Pull Channel (REST API)** | ForenRAG Host $\rightarrow$ OpenSearch Indexer | `HTTPS POST https://10.209.42.103:9200` | Polling `wazuh-alerts-*` & querying `wazuh-archives-*` | Fault-tolerant backup poller + raw Sysmon graph correlation |
+| **Pull Channel (REST API)** | ForenRAG Host $\rightarrow$ OpenSearch Indexer | `HTTPS POST ${OPENSEARCH_URL}` | Polling `wazuh-alerts-*` & querying `wazuh-archives-*` | Fault-tolerant backup poller + raw Sysmon graph correlation |
 
 ---
 
@@ -164,6 +164,17 @@ Follow these exact steps to replicate the experimental laboratory and run ForenR
    ```bash
    cd /home/codeinfra/projects/research/ForenRAG
    uv sync
+   ```
+5. **Configure Environment Variables (`.env`)**:
+   Copy `.env.example` to `.env` and set `OPENSEARCH_URL` to point to your Ubuntu Security Server VM (Wazuh / OpenSearch Indexer on Port 9200):
+   ```bash
+   cp .env.example .env
+   ```
+   Edit `.env`:
+   ```bash
+   # OpenSearch Server Connection URL
+   # Replace <OPENSEARCH_IP> with the IP address of your Wazuh / OpenSearch Security Server VM (Port 9200)
+   OPENSEARCH_URL=https://<OPENSEARCH_IP>:9200
    ```
 
 ---

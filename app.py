@@ -16,11 +16,14 @@ import ssl
 import threading
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = Flask(__name__)
 
 # Configuration & Paths
-OPENSEARCH_URL = "https://10.209.42.103:9200"
+OPENSEARCH_URL = os.getenv("OPENSEARCH_URL")
 PASS_FILE = "/home/vboxuser/pass.txt"
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "evidence_packages")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -28,7 +31,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # Severity Level Filter: Trigger ONLY on High / Critical Alerts (Level >= 12)
 MIN_RULE_LEVEL = 12
 
-SETTLING_WINDOW_SECONDS = 5.0
+SETTLING_WINDOW_SECONDS = 15.0
 session_buckets = {}
 bucket_lock = threading.Lock()
 
