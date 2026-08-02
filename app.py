@@ -129,6 +129,48 @@ def collect_artifacts(guids):
             
     return {"file_creations": files, "registry_sets": registry}
 
+def get_root_ancestor_guid(process_guid, parent_guid):
+    """
+    Architectural Process Tree Correlation:
+    Recursively resolves the top-most root ancestor GUID below system logon shells 
+    (explorer.exe, userinit.exe, services.exe) to establish a unique, invariant session key.
+    """
+    current_guid = parent_guid or process_guid
+    SYSTEM_SHELLS = {"explorer.exe", "userinit.exe", "winlogon.exe", "services.exe", "smss.exe"}
+    visited = set()
+    root_candidate = current_guid
+
+    while current_guid and current_guid not in visited:
+        visited.add(current_guid)
+        q = {
+            "query": {
+                "bool": {
+                    "must": [
+                        {"term": {"agent.id": "002"}},
+                        {"term": {"data.win.system.eventID": "1"}},
+                        {"query_string": {"default_field": "data.win.eventdata.processGuid", "query": f'"{current_guid}"'}}
+                    ]
+                }
+            },
+            "size": 1
+        }
+        hits = query_opensearch("wazuh-archives-*", q).get("hits", {}).get("hits", [])
+        if not hits:
+            break
+        
+        ev = hits[0]["_source"].get("data", {}).get("win", {}).get("eventdata", {})
+        parent_img = os.path.basename(ev.get("parentImage", "")).lower()
+        parent_guid_val = ev.get("parentProcessGuid")
+
+        if parent_img in SYSTEM_SHELLS or not parent_guid_val:
+            root_candidate = current_guid
+            break
+        
+        root_candidate = current_guid
+        current_guid = parent_guid_val
+
+    return root_candidate
+
 # ---------------------------------------------------------------------------
 # 3. Session Consolidation, Subfolder Creation & Automated RAG Pipeline
 # ---------------------------------------------------------------------------
@@ -217,13 +259,13 @@ def handle_wazuh_alert():
         "command_line": ev.get("commandLine")
     }
 
+    session_key = get_root_ancestor_guid(process_guid, parent_guid)
+
     with bucket_lock:
-        if session_buckets:
-            session_key = next(iter(session_buckets))
+        if session_key in session_buckets:
             session_buckets[session_key]["timer"].cancel()
             session_buckets[session_key]["alerts"].append(alert_summary)
         else:
-            session_key = parent_guid
             session_buckets[session_key] = {"alerts": [alert_summary], "timer": None}
 
         timer = threading.Timer(SETTLING_WINDOW_SECONDS, finalize_session, args=[session_key])
@@ -231,7 +273,7 @@ def handle_wazuh_alert():
         timer.start()
 
     print(f"[🚨 CRITICAL ALERT RECEIVED] Rule {rule.get('id')} (L{rule_level}): {rule.get('description')}")
-    return jsonify({"status": "queued", "session": parent_guid}), 200
+    return jsonify({"status": "queued", "session": session_key}), 200
 
 @app.route('/status', methods=['GET'])
 def status(): return jsonify({"status": "running", "min_rule_level": MIN_RULE_LEVEL, "output_dir": OUTPUT_DIR}), 200
@@ -312,15 +354,17 @@ def start_opensearch_poller():
                     "command_line": cmd
                 }
                 
-                with bucket_lock:
-                    if parent_guid in session_buckets:
-                        session_buckets[parent_guid]["timer"].cancel()
-                        session_buckets[parent_guid]["alerts"].append(alert_summary)
-                    else:
-                        session_buckets[parent_guid] = {"alerts": [alert_summary], "timer": None}
+                session_key = get_root_ancestor_guid(pguid, parent_guid)
 
-                    timer = threading.Timer(SETTLING_WINDOW_SECONDS, finalize_session, args=[parent_guid])
-                    session_buckets[parent_guid]["timer"] = timer
+                with bucket_lock:
+                    if session_key in session_buckets:
+                        session_buckets[session_key]["timer"].cancel()
+                        session_buckets[session_key]["alerts"].append(alert_summary)
+                    else:
+                        session_buckets[session_key] = {"alerts": [alert_summary], "timer": None}
+
+                    timer = threading.Timer(SETTLING_WINDOW_SECONDS, finalize_session, args=[session_key])
+                    session_buckets[session_key]["timer"] = timer
                     timer.start()
                 
                 print(f"[🚨 CRITICAL ALERT DETECTED] Rule {rule.get('id')} (L{rule_level}): {rule.get('description')} | Cmd: {cmd[:70]}...")
