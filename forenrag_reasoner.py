@@ -9,11 +9,17 @@ import os
 import json
 import sys
 import time
+from dotenv import load_dotenv
 from langchain_ollama import OllamaLLM
 from langchain_core.prompts import PromptTemplate
 from forenrag_retriever import retrieve_rag_context
 
-DEFAULT_MODEL = "gemma4:e2b"
+load_dotenv()
+
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma2:2b")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))
+LLM_NUM_CTX = int(os.getenv("LLM_NUM_CTX", "8192"))
 
 def format_evidence_summary(pkg):
     """Formats raw Sysmon JSON payload into structured text blocks for strictly grounded telemetry LLM reasoning."""
@@ -45,11 +51,12 @@ def format_evidence_summary(pkg):
         
     return "\n".join(summary_lines)
 
-def generate_forensic_report(evidence_json_path, model_name=DEFAULT_MODEL):
+def generate_forensic_report(evidence_json_path, model_name=None):
     """
     Ingests Phase 3 JSON evidence + Phase 4 RAG retrieved context,
     invokes local Ollama LLM, and generates an explainable DFIR report.
     """
+    model_name = model_name or OLLAMA_MODEL
     if not os.path.exists(evidence_json_path):
         raise FileNotFoundError(f"Evidence JSON file not found: {evidence_json_path}")
 
@@ -61,7 +68,7 @@ def generate_forensic_report(evidence_json_path, model_name=DEFAULT_MODEL):
     print(f"==================================================\n")
 
     # Step 1: Retrieve RAG Knowledge Context from ChromaDB (Phase 4)
-    retrieved_passages, query_str = retrieve_rag_context(evidence_json_path, top_k=3)
+    retrieved_passages, query_str = retrieve_rag_context(evidence_json_path)
     kb_context = "\n\n".join([f"--- Knowledge Chunk ({p['source']}) ---\n{p['content']}" for p in retrieved_passages])
 
     # Step 2: Read Evidence Package JSON & Format Text Summary
@@ -96,7 +103,7 @@ FORENSIC REPORT:"""
     )
 
     print(f"\n[+] Invoking Ollama LLM Model '{model_name}' via LangChain...")
-    llm = OllamaLLM(model=model_name, temperature=0.1, num_ctx=8192, num_predict=4096)
+    llm = OllamaLLM(model=model_name, base_url=OLLAMA_BASE_URL, temperature=LLM_TEMPERATURE, num_ctx=LLM_NUM_CTX, num_predict=4096)
 
     formatted_prompt = prompt.format(
         evidence_text=evidence_text,
@@ -157,5 +164,5 @@ if __name__ == "__main__":
         print("[!] No evidence JSON files found in evidence_packages/")
         sys.exit(1)
 
-    model = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_MODEL
+    model = sys.argv[2] if len(sys.argv) > 2 else OLLAMA_MODEL
     generate_forensic_report(test_file, model)

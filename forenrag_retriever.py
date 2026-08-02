@@ -8,18 +8,23 @@ extracted from Phase 3 Evidence Package JSON files.
 import os
 import json
 import sys
+from dotenv import load_dotenv
 from langchain_chroma import Chroma
 from langchain_ollama import OllamaEmbeddings
 
+load_dotenv()
+
 CHROMA_DB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chroma_db_storage")
-EMBEDDING_MODEL = "nomic-embed-text"
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+DEFAULT_TOP_K = int(os.getenv("RAG_TOP_K", "3"))
 
 def get_retriever():
     """Initializes persistent ChromaDB vector store retriever using Ollama embeddings."""
     if not os.path.exists(CHROMA_DB_DIR):
         raise FileNotFoundError(f"ChromaDB directory '{CHROMA_DB_DIR}' not found. Run build_chroma_db.py first.")
 
-    embedding_function = OllamaEmbeddings(model=EMBEDDING_MODEL)
+    embedding_function = OllamaEmbeddings(model=EMBEDDING_MODEL, base_url=OLLAMA_BASE_URL)
     vector_store = Chroma(
         persist_directory=CHROMA_DB_DIR,
         embedding_function=embedding_function,
@@ -27,11 +32,12 @@ def get_retriever():
     )
     return vector_store
 
-def retrieve_rag_context(evidence_json_path, top_k=3):
+def retrieve_rag_context(evidence_json_path, top_k=None):
     """
     Extracts telemetry parameters from Phase 3 Evidence JSON,
     formulates a RAG query string, and retrieves top_k knowledge passages from ChromaDB.
     """
+    top_k = top_k or DEFAULT_TOP_K
     if not os.path.exists(evidence_json_path):
         raise FileNotFoundError(f"Evidence JSON package file not found: {evidence_json_path}")
 
