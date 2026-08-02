@@ -24,14 +24,16 @@ app = Flask(__name__)
 
 # Configuration & Paths
 OPENSEARCH_URL = os.getenv("OPENSEARCH_URL")
-PASS_FILE = "/home/vboxuser/pass.txt"
+OPENSEARCH_USER = os.getenv("OPENSEARCH_USER")
+OPENSEARCH_PASSWORD = os.getenv("OPENSEARCH_PASSWORD")
+DEFAULT_AGENT_ID = os.getenv("WAZUH_AGENT_ID")
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "evidence_packages")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Severity Level Filter: Trigger ONLY on High / Critical Alerts (Level >= 12)
-MIN_RULE_LEVEL = 12
+MIN_RULE_LEVEL = int(os.getenv("MIN_RULE_LEVEL"))
+SETTLING_WINDOW_SECONDS = float(os.getenv("SETTLING_WINDOW_SECONDS"))
 
-SETTLING_WINDOW_SECONDS = 15.0
 session_buckets = {}
 bucket_lock = threading.Lock()
 
@@ -39,12 +41,8 @@ bucket_lock = threading.Lock()
 # 1. OpenSearch Authentication & REST Helper
 # ---------------------------------------------------------------------------
 def get_auth_header():
-    user, pwd = "admin", "REDACTED_PASSWORD"
-    if os.path.exists(PASS_FILE):
-        with open(PASS_FILE, "r") as f:
-            for line in f:
-                if "User:" in line: user = line.split("User:", 1)[1].strip()
-                elif "Password:" in line: pwd = line.split("Password:", 1)[1].strip()
+    user = os.getenv("OPENSEARCH_USER")
+    pwd = os.getenv("OPENSEARCH_PASSWORD")
     creds = base64.b64encode(f"{user}:{pwd}".encode('utf-8')).decode('utf-8')
     return f"Basic {creds}"
 
@@ -70,9 +68,10 @@ def query_opensearch(index_pattern, query_payload):
 # ---------------------------------------------------------------------------
 # 2. Process Tree & Artifact Correlation Engine (Direct Lineage Focused)
 # ---------------------------------------------------------------------------
-def trace_process_tree(initial_guid, max_depth=5):
+def trace_process_tree(initial_guid, agent_id=None, max_depth=5):
     """Recursively traces parent-child process lineage using Sysmon Event ID 1."""
     if not initial_guid: return []
+    agent_id = agent_id or DEFAULT_AGENT_ID
     visited, process_nodes, queue = set(), [], [(initial_guid, 0)]
     
     GENERIC_SHELLS = ["explorer.exe", "svchost.exe", "lsass.exe", "services.exe", "winlogon.exe", "csrss.exe", "userinit.exe"]
@@ -82,7 +81,7 @@ def trace_process_tree(initial_guid, max_depth=5):
         if guid in visited or depth > max_depth: continue
         visited.add(guid)
         
-        q = {"query": {"bool": {"must": [{"term": {"agent.id": "002"}}, {"term": {"data.win.system.eventID": "1"}}, {"query_string": {"default_field": "data.win.eventdata.processGuid", "query": f'"{guid}"'}}]}}, "size": 1}
+        q = {"query": {"bool": {"must": [{"term": {"agent.id": agent_id}}, {"term": {"data.win.system.eventID": "1"}}, {"query_string": {"default_field": "data.win.eventdata.processGuid", "query": f'"{guid}"'}}]}}, "size": 1}
         res = query_opensearch("wazuh-archives-*", q)
         hits = res.get("hits", {}).get("hits", [])
         if hits:
@@ -105,7 +104,7 @@ def trace_process_tree(initial_guid, max_depth=5):
             if parent and parent not in visited: queue.append((parent, depth + 1))
             
             if not any(sh in img for sh in GENERIC_SHELLS):
-                cq = {"query": {"bool": {"must": [{"term": {"agent.id": "002"}}, {"term": {"data.win.system.eventID": "1"}}, {"query_string": {"default_field": "data.win.eventdata.parentProcessGuid", "query": f'"{guid}"'}}]}}, "size": 20}
+                cq = {"query": {"bool": {"must": [{"term": {"agent.id": agent_id}}, {"term": {"data.win.system.eventID": "1"}}, {"query_string": {"default_field": "data.win.eventdata.parentProcessGuid", "query": f'"{guid}"'}}]}}, "size": 20}
                 c_res = query_opensearch("wazuh-archives-*", cq)
                 for ch in c_res.get("hits", {}).get("hits", []):
                     c_guid = ch["_source"].get("data", {}).get("win", {}).get("eventdata", {}).get("processGuid")
@@ -113,29 +112,31 @@ def trace_process_tree(initial_guid, max_depth=5):
                 
     return process_nodes
 
-def collect_artifacts(guids):
+def collect_artifacts(guids, agent_id=None):
     """Correlates File Creations (EID 11) and Registry Set Values (EID 13)."""
     files, registry = [], []
+    agent_id = agent_id or DEFAULT_AGENT_ID
     for g in guids:
-        fq = {"query": {"bool": {"must": [{"term": {"agent.id": "002"}}, {"term": {"data.win.system.eventID": "11"}}, {"query_string": {"default_field": "data.win.eventdata.processGuid", "query": f'"{g}"'}}]}}, "size": 10}
+        fq = {"query": {"bool": {"must": [{"term": {"agent.id": agent_id}}, {"term": {"data.win.system.eventID": "11"}}, {"query_string": {"default_field": "data.win.eventdata.processGuid", "query": f'"{g}"'}}]}}, "size": 10}
         for hit in query_opensearch("wazuh-archives-*", fq).get("hits", {}).get("hits", []):
             ev = hit["_source"].get("data", {}).get("win", {}).get("eventdata", {})
             files.append({"process_guid": g, "image": ev.get("image"), "target_filename": ev.get("targetFilename"), "timestamp": hit["_source"].get("timestamp")})
             
-        rq = {"query": {"bool": {"must": [{"term": {"agent.id": "002"}}, {"term": {"data.win.system.eventID": "13"}}, {"query_string": {"default_field": "data.win.eventdata.processGuid", "query": f'"{g}"'}}]}}, "size": 10}
+        rq = {"query": {"bool": {"must": [{"term": {"agent.id": agent_id}}, {"term": {"data.win.system.eventID": "13"}}, {"query_string": {"default_field": "data.win.eventdata.processGuid", "query": f'"{g}"'}}]}}, "size": 10}
         for hit in query_opensearch("wazuh-archives-*", rq).get("hits", {}).get("hits", []):
             ev = hit["_source"].get("data", {}).get("win", {}).get("eventdata", {})
             registry.append({"process_guid": g, "image": ev.get("image"), "target_object": ev.get("targetObject"), "details": ev.get("details"), "timestamp": hit["_source"].get("timestamp")})
             
     return {"file_creations": files, "registry_sets": registry}
 
-def get_root_ancestor_guid(process_guid, parent_guid):
+def get_root_ancestor_guid(process_guid, parent_guid, agent_id=None):
     """
     Architectural Process Tree Correlation:
     Recursively resolves the top-most root ancestor GUID below system logon shells 
     (explorer.exe, userinit.exe, services.exe) to establish a unique, invariant session key.
     """
     current_guid = parent_guid or process_guid
+    agent_id = agent_id or DEFAULT_AGENT_ID
     SYSTEM_SHELLS = {"explorer.exe", "userinit.exe", "winlogon.exe", "services.exe", "smss.exe"}
     visited = set()
     root_candidate = current_guid
@@ -146,7 +147,7 @@ def get_root_ancestor_guid(process_guid, parent_guid):
             "query": {
                 "bool": {
                     "must": [
-                        {"term": {"agent.id": "002"}},
+                        {"term": {"agent.id": agent_id}},
                         {"term": {"data.win.system.eventID": "1"}},
                         {"query_string": {"default_field": "data.win.eventdata.processGuid", "query": f'"{current_guid}"'}}
                     ]
