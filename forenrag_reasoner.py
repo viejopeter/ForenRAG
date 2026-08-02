@@ -121,6 +121,14 @@ FORENSIC REPORT:"""
     coll_latency = pkg.get("collection_latency_seconds", 0.0)
     total_latency = round(coll_latency + reasoning_latency, 3)
 
+    # Persist RAG and reasoning metrics into evidence.json for empirical automated extraction
+    pkg["rag_query"] = query_str
+    pkg["rag_passages"] = retrieved_passages
+    pkg["reasoning_latency_seconds"] = reasoning_latency
+    pkg["total_latency_seconds"] = total_latency
+    with open(evidence_json_path, "w", encoding="utf-8") as f:
+        json.dump(pkg, f, indent=2)
+
     metrics_footer = f"\n\n---\n\n### 📊 Experimental Benchmark Latency Metrics\n" \
                      f"* **Collection Latency ($L_{{\\text{{coll}}}}$):** `{coll_latency}` seconds\n" \
                      f"* **Reasoning Latency ($L_{{\\text{{reason}}}}$):** `{reasoning_latency}` seconds\n" \
