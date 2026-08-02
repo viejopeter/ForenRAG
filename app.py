@@ -218,14 +218,16 @@ def handle_wazuh_alert():
     }
 
     with bucket_lock:
-        if parent_guid in session_buckets:
-            session_buckets[parent_guid]["timer"].cancel()
-            session_buckets[parent_guid]["alerts"].append(alert_summary)
+        if session_buckets:
+            session_key = next(iter(session_buckets))
+            session_buckets[session_key]["timer"].cancel()
+            session_buckets[session_key]["alerts"].append(alert_summary)
         else:
-            session_buckets[parent_guid] = {"alerts": [alert_summary], "timer": None}
+            session_key = parent_guid
+            session_buckets[session_key] = {"alerts": [alert_summary], "timer": None}
 
-        timer = threading.Timer(SETTLING_WINDOW_SECONDS, finalize_session, args=[parent_guid])
-        session_buckets[parent_guid]["timer"] = timer
+        timer = threading.Timer(SETTLING_WINDOW_SECONDS, finalize_session, args=[session_key])
+        session_buckets[session_key]["timer"] = timer
         timer.start()
 
     print(f"[🚨 CRITICAL ALERT RECEIVED] Rule {rule.get('id')} (L{rule_level}): {rule.get('description')}")
