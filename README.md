@@ -1,16 +1,92 @@
-# ForenRAG: Event-Driven Digital Forensic Investigation Framework
+# ForenRAG: An Event-Driven Retrieval-Augmented Framework for Explainable Digital Forensic Investigation after Cyber Intrusion Detection
 
 ## 📌 Executive Summary
 
-**ForenRAG** is an academic research framework designed to automate post-detection digital forensic evidence collection, context correlation, and report synthesis following cyber intrusion alerts. Modern Intrusion Detection Systems (IDS) and SIEM platforms flood Security Operations Centers (SOCs) with thousands of alerts daily, requiring human analysts to manually trace parent-child process trees, cross-reference registry/file modifications, and write incident reports—a process taking over 33 minutes per alert.
+**ForenRAG** is an academic research framework designed to automate post-detection digital forensic evidence collection, context correlation, and report synthesis following cyber intrusion alerts. Modern Intrusion Detection Systems (IDS) and SIEM platforms generate a high volume of alerts daily, requiring security analysts to manually trace parent-child process trees, cross-reference registry/file modifications, and write incident reports.
 
-ForenRAG bridges threat detection and digital forensics by automatically capturing, correlating, and structuring forensic evidence immediately after a high-severity alert fires (Wazuh Rule Level $\ge 12$). Utilizing a local vector store (ChromaDB) and local LLM reasoning (Ollama `gemma4:e2b`), ForenRAG reduces post-detection triage latency from **33 minutes 08 seconds down to 12.35 seconds** (**99.38% operational time reduction**) with **zero unverified entity artifacts across evaluated benchmark trials**.
+ForenRAG bridges threat detection and digital forensics by capturing, correlating, and structuring forensic evidence after a high-severity alert fires (configurable via `MIN_RULE_LEVEL`). Utilizing a local Retrieval-Augmented Generation (RAG) architecture powered by ChromaDB vector storage and local LLM reasoning (Ollama `gemma4:e2b`), ForenRAG performs automated telemetry extraction, root ancestor process tree correlation, and explainable DFIR report generation.
 
 ---
 
-## 🖥️ System Architecture & Laboratory Topology
+## 🧠 Retrieval-Augmented Generation (RAG) Architecture
 
-The experimental research laboratory comprises three distinct physical and virtualized system nodes operating in a closed-loop topology:
+In digital forensic investigations, raw endpoint telemetry provides the *empirical evidence*, but Large Language Models (LLMs) require grounded domain expertise to analyze complex attacks without hallucinating. ForenRAG implements a dedicated two-stage RAG architecture:
+
+1. **Vector Knowledge Indexing**: Official threat intelligence documents, MITRE ATT&CK playbooks, CISA containment guides, and LOLBAS definitions located in `./knowledge_base/` are chunked and embedded into 768-dimensional vectors using `nomic-embed-text`, persisting in a local **ChromaDB** vector database (`./chroma_db_storage/`).
+2. **Context-Grounded DFIR Synthesis**: When an intrusion alert fires, `forenrag_retriever.py` formulates a query based on the triggered rule description, MITRE technique IDs, and process image names. It retrieves the top-K most relevant threat intelligence passages (`RAG_TOP_K`), which `forenrag_reasoner.py` injects alongside the raw Sysmon telemetry graph into **`gemma4:e2b`**. This guarantees strictly grounded, explainable DFIR reports.
+
+---
+
+## 🛠️ Technology Stack & Purpose
+
+| Technology | Role / Category | Purpose in ForenRAG |
+| :--- | :--- | :--- |
+| **Python 3.10+** | Programming Language | Core backend language orchestrating all telemetry, correlation, and AI modules. |
+| **Flask** | Web Framework | Hosts real-time HTTP POST webhook listener (`POST /alert` on `:5000`) in `app.py`. |
+| **LangChain** | AI Orchestration | Integrates prompt templates, ChromaDB vector retriever, and Ollama LLM execution pipelines. |
+| **Ollama** | Local AI Engine | Executes local LLM reasoning and embedding models on-premise without external cloud APIs. |
+| **gemma4:e2b** | Reasoning LLM (`OLLAMA_MODEL`) | Analyzes evidence packages and synthesizes structured 5-section DFIR reports. |
+| **Nomic-Embed-Text** | Embedding Model (`EMBEDDING_MODEL`) | Converts threat intelligence and playbooks into 768-dimensional vector embeddings. |
+| **ChromaDB** | Vector Database | Stores knowledge embeddings in `./chroma_db_storage/` and performs top-K similarity search. |
+| **OpenSearch** | Telemetry Search Engine | Indexes raw Sysmon events (`wazuh-archives-*`) and alerts (`wazuh-alerts-*`) for process graph tracing. |
+| **Sysmon & Wazuh** | Endpoint SIEM Telemetry | Captures process lineage (EID 1), files (EID 11), registry keys (EID 13), and evaluates alert levels. |
+| **`uv`** | Package Manager | Fast Rust-based Python dependency management and environment execution (`uv run`). |
+| **Atomic Red Team** | Adversary Emulation | Executes standardized MITRE ATT&CK attack scenarios (`Invoke-AtomicTest`) on victim VM. |
+
+---
+
+## 📁 Repository Directory Structure
+
+```text
+ForenRAG/
+├── .env.example              # Master environment configuration template
+├── .env                      # Active environment variables (Git-ignored)
+├── .gitignore                # Excludes virtualenv, .env, and local artifacts
+├── app.py                    # Flask webhook listener, OpenSearch poller & session engine
+├── build_chroma_db.py        # ChromaDB vector store indexer
+├── forenrag_retriever.py     # RAG knowledge similarity search engine
+├── forenrag_reasoner.py      # Ollama LLM DFIR report reasoning engine
+├── pyproject.toml            # Python project dependencies (managed via uv)
+├── requirements.txt          # Pip requirements file
+├── knowledge_base/           # Open-source threat intelligence & playbooks (.md, .yml)
+├── chroma_db_storage/        # Persistent ChromaDB vector store (Generated)
+└── evidence_packages/        # Output directory for structured DFIR packages (Generated)
+    └── XXX_incident_TIMESTAMP_MITRE/
+        ├── evidence.json     # Structured Sysmon telemetry JSON package
+        └── forensic_report.md# Grounded 5-section explainable DFIR report
+```
+
+---
+
+## 🏛️ Module Architecture & Core Functions
+
+### 1. Telemetry Collector & Session Engine (`app.py`)
+* **Dual Ingestion Channels**:
+  * **Webhook Channel (`POST /alert`)**: Receives real-time HTTP POST alerts from Wazuh Manager.
+  * **OpenSearch Poller Thread**: Asynchronously queries `wazuh-alerts-*` every 3 seconds for critical alerts ($\text{Rule Level} \ge \text{MIN\_RULE\_LEVEL}$).
+* **Root Ancestor Process Tree Correlation (`get_root_ancestor_guid`)**: Dynamically queries Sysmon Event ID 1 (Process Creation) logs in `wazuh-archives-*` to trace parent process GUIDs up to root user shells (`explorer.exe`, `userinit.exe`, `services.exe`). This guarantees that multi-stage process executions (`powershell` $\rightarrow$ `cmd` $\rightarrow$ `schtasks`) consolidate into a single incident session.
+* **Process Lineage Tracer (`trace_process_tree`)**: Recursively extracts process execution nodes up to a maximum depth of 5, capturing process IDs, image paths, CLI arguments, user SIDs, integrity levels, and file hashes (MD5/SHA256/IMPHASH).
+* **Artifact Correlation Engine (`collect_artifacts`)**: Queries OpenSearch for Sysmon Event ID 11 (File Creations in `%TEMP%` / `AppData`) and Event ID 13 (Registry Modifications under `Run` keys).
+* **Session Consolidation (`finalize_session`)**: Consolidates alerts within a configurable settling window (`SETTLING_WINDOW_SECONDS`), calculates collection latency ($L_{\text{coll}}$), writes `evidence.json`, and triggers the reasoning pipeline.
+
+### 2. Knowledge Base Indexer (`build_chroma_db.py`)
+* Reads threat intelligence documents and playbooks from `./knowledge_base/` (`.md`, `.yml`, `.yaml`).
+* Splits documents into text chunks using LangChain `RecursiveCharacterTextSplitter` (configurable `CHROMA_CHUNK_SIZE` and `CHROMA_CHUNK_OVERLAP`).
+* Computes vector embeddings via local Ollama embedding models (`EMBEDDING_MODEL`) and persists the vector store in `./chroma_db_storage/`.
+
+### 3. RAG Retrieval Engine (`forenrag_retriever.py`)
+* Formulates similarity search queries using telemetry parameters (trigger rule description, MITRE technique IDs, and process image basenames).
+* Queries the local ChromaDB vector store (`forenrag_kb` collection) and retrieves the top-K threat passages (`RAG_TOP_K`) with distance scoring.
+
+### 4. LLM Reasoning Engine (`forenrag_reasoner.py`)
+* Formats raw Sysmon telemetry and retrieved RAG context into a grounded prompt template.
+* Invokes local Ollama LLMs (`OLLAMA_MODEL`) at low temperature (`LLM_TEMPERATURE`) and context window (`LLM_NUM_CTX`).
+* Synthesizes a 5-section explainable DFIR report covering Executive Summary, Process Lineage Table, Evidence Traceability, MITRE/LOLBAS Mapping, and Remediation Playbooks.
+* Computes reasoning latency ($L_{\text{reason}}$) and total latency ($T_{\text{automated}} = L_{\text{coll}} + L_{\text{reason}}$), appending metrics to `forensic_report.md`.
+
+---
+
+## 🖥️ System Architecture Topology
 
 ```
 +---------------------------------------------------------------------------------------------------+
@@ -20,134 +96,55 @@ The experimental research laboratory comprises three distinct physical and virtu
 |  +-------------------------------------+   Sysmon Telemetry  +---------------------------------+  |
 |  |     VM 1: Windows 11 Victim Client  | ------------------->|  VM 2: Ubuntu Security Server   |  |
 |  |  - Sysmon v15.0 (EID 1, 11, 13)       |    TLS Port 1514    |  - Wazuh Manager v4.7           |  |
-|  |  - Wazuh Agent v4.7 (Agent ID: 002)   |                     |  - OpenSearch Indexer (:9200)   |  |
-|  +-------------------------------------+                     +---------------------------------+  |
-|                                                                    |              |               |
-|                                                     Wazuh Webhook  |              | REST API      |
-|                                                    (POST /alert)   |              | Queries       |
-|                                                    Rule Level >= 12|              | (Port 9200)   |
-|                                                                    v              v               |
+|  |  - Atomic Red Team Test Suite       |                     |  - OpenSearch Indexer (:9200)   |  |
+|  |  - Wazuh Agent (WAZUH_AGENT_ID)     |                     +---------------------------------+  |
+|  +-------------------------------------+                                    |              |      |
+|                                                                    Wazuh    |              | REST |
+|                                                                   Webhook   |              | API  |
+|                                                                (POST /alert)|              | (:9200)
+|                                                              (Level >= 12)  v              v      |
 |                                                      +-----------------------------------------+  |
-|                                                      |  ForenRAG Host (Code Analysis Engine)   |  |
+|                                                      |  ForenRAG Host (Analysis Engine)        |  |
 |                                                      |  - Flask Alert Listener (app.py :5000)   |  |
 |                                                      |  - OpenSearch Live Alerts & Graph Poller|  |
-|                                                      |  - Session Bucket Consolidation Engine  |  |
-|                                                      |  - ChromaDB Vector Store (Phase 4)      |  |
-|                                                      |  - Local Ollama Engine (gemma4:e2b)     |  |
+|                                                      |  - Root Ancestor Process Tree Engine    |  |
+|                                                      |  - ChromaDB Vector Store Engine         |  |
+|                                                      |  - Local Ollama Engine (OLLAMA_MODEL)   |  |
 |                                                      +-----------------------------------------+  |
 |                                                                                                   |
 +---------------------------------------------------------------------------------------------------+
 ```
 
-### 📊 End-to-End Data Flow Sequence
+---
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Win11 as VM 1: Windows 11 Client (Sysmon)
-    participant Wazuh as VM 2: Wazuh Manager (v4.7)
-    participant OS as VM 2: OpenSearch Indexer (:9200)
-    participant App as ForenRAG Host: app.py (:5000)
-    participant Chroma as ChromaDB Vector Store
-    participant Ollama as Local Ollama LLM (gemma4:e2b)
+## ⚙️ Environment Configuration Reference (`.env`)
 
-    Win11->>Wazuh: Stream Sysmon Events (EID 1, 11, 13) via TLS 1514
-    Wazuh->>OS: Index raw logs to wazuh-archives-* & alerts to wazuh-alerts-*
-    alt Push Trigger (HTTP Webhook)
-        Wazuh->>App: HTTP POST /alert (Rule Level >= 12)
-    else Pull Trigger (Periodic 3s Poller)
-        App->>OS: Query wazuh-alerts-* (Rule Level >= 12, last 2 mins)
-    end
-    App->>App: Group events into 5.0s Dynamic Settling Window (by parentProcessGuid)
-    App->>OS: Recursive Lineage Search on wazuh-archives-* (Sysmon EID 1, depth <= 5)
-    App->>OS: Correlate File (EID 11) & Registry (EID 13) Artifacts
-    App->>App: Emit Standardized Evidence Package (evidence.json)
-    App->>Chroma: Query nomic-embed-text vector store (Top-3 threat intel passages)
-    Chroma-->>App: Return MITRE ATT&CK & LOLBAS context
-    App->>Ollama: Invoke low-temp (T=0.1) inference with grounded telemetry context
-    Ollama-->>App: Synthesize 5-section DFIR Report (forensic_report.md)
-```
+All parameters are configured via environment variables in `.env`:
+
+| Parameter | Type | Default Value | Description |
+| :--- | :---: | :--- | :--- |
+| `OPENSEARCH_URL` | String | `https://<OPENSEARCH_IP>:9200` | OpenSearch Indexer REST API URL |
+| `OPENSEARCH_USER` | String | `admin` | OpenSearch HTTP Basic Auth Username |
+| `OPENSEARCH_PASSWORD` | String | `admin` | OpenSearch HTTP Basic Auth Password |
+| `WAZUH_AGENT_ID` | String | `002` | Wazuh Agent ID of target Windows node |
+| `MIN_RULE_LEVEL` | Integer | `12` | Minimum Wazuh rule severity level to trigger collection |
+| `SETTLING_WINDOW_SECONDS` | Float | `15.0` | Session consolidation settling window in seconds |
+| `OLLAMA_BASE_URL` | String | `http://localhost:11434` | Ollama local REST API base endpoint |
+| `OLLAMA_MODEL` | String | `gemma4:e2b` | Ollama reasoning LLM model tag |
+| `EMBEDDING_MODEL` | String | `nomic-embed-text` | Ollama embedding model tag for ChromaDB |
+| `LLM_TEMPERATURE` | Float | `0.1` | Temperature setting for LLM inference |
+| `LLM_NUM_CTX` | Integer | `8192` | LLM context window size (tokens) |
+| `RAG_TOP_K` | Integer | `3` | Number of top knowledge passages retrieved per query |
+| `CHROMA_CHUNK_SIZE` | Integer | `400` | Character chunk size for text splitting |
+| `CHROMA_CHUNK_OVERLAP` | Integer | `50` | Character overlap size for text splitting |
 
 ---
 
-### Component Breakdown & Network Specification
-
-#### 1. VM 1: Windows 11 Victim Client (Target Node)
-* **OS**: Windows 11 Enterprise (64-bit).
-* **Sysmon v15.0 Telemetry Instrumentation**:
-  * `Event ID 1`: Process Creation (Captures 128-bit `processGuid`, `parentProcessGuid`, CLI parameters, User SIDs, Integrity levels, MD5/SHA256/IMPHASH).
-  * `Event ID 11`: File Creation (Monitors `%TEMP%` and `AppData\Local\Temp` payload drops).
-  * `Event ID 13`: Registry Value Modifications (Monitors autorun keys `HKLM\...\Run`, `HKU\...\Run`, and Scheduled Task caches).
-* **Wazuh Agent v4.7 (Agent ID: 002)**: Encrypts and streams Sysmon events to the Security Server over TLS (Ports 1514/1515).
-
-#### 2. VM 2: Ubuntu Security Server (SIEM & Search Engine)
-* **Wazuh Manager v4.7**: Decodes incoming Sysmon telemetry, evaluates intrusion rules, assigns threat levels (0–15), and triggers automated integrations.
-* **OpenSearch Indexer Engine (`OPENSEARCH_URL` / `https://<OPENSEARCH_IP>:9200`)**:
-  * `wazuh-alerts-*`: Stores high-level intrusion alerts for initial detection.
-  * `wazuh-archives-*`: Stores raw Sysmon event logs required for multi-hop process graph correlation.
-* **Wazuh Webhook Integration Configuration (`/var/ossec/etc/ossec.conf`)**:
-  ```xml
-  <ossec_config>
-    <integration>
-      <name>custom-webhook</name>
-      <hook_url>http://<FORENRAG_HOST_IP>:5000/alert</hook_url>
-      <level>12</level>
-      <alert_format>json</alert_format>
-    </integration>
-  </ossec_config>
-  ```
-
-#### 3. ForenRAG Analysis Host (Autonomous Analysis Engine)
-* **Python Runtime Environment**: Managed via `uv` package manager (Python 3.10+) with `python-dotenv` environment configuration.
-* **Dual-Trigger Collector (`app.py`)**: Runs Flask web server (`:5000/alert`) and OpenSearch poller thread simultaneously.
-* **ChromaDB Vector Store (`./chroma_db_storage`)**: Embedded local vector database indexing Red Canary and LOLBAS playbooks using `nomic-embed-text` (768-dimensional, 8,192 token context).
-* **Local Ollama Inference Server**: Runs `gemma4:e2b` (7.2B parameters) at low temperature ($T=0.1$) for zero-hallucination DFIR report generation.
-
----
-
-### Dual-Channel Ingestion Matrix
-
-| Ingestion Channel | Direction | Protocol & Endpoint | Primary Purpose | Resiliency Role |
-| :--- | :--- | :--- | :--- | :--- |
-| **Push Channel (Webhook)** | Wazuh Manager $\rightarrow$ ForenRAG Host | `HTTP POST http://0.0.0.0:5000/alert` | Real-time sub-second alert trigger | Sub-second real-time alert intake |
-| **Pull Channel (REST API)** | ForenRAG Host $\rightarrow$ OpenSearch Indexer | `HTTPS POST ${OPENSEARCH_URL}` | Polling `wazuh-alerts-*` & querying `wazuh-archives-*` | Fault-tolerant backup poller + raw Sysmon graph correlation |
-
----
-
-## 🤖 Required Local AI Models (Ollama)
-
-ForenRAG runs **100% locally and on-premise**, guaranteeing data privacy and evidentiary security. Two specific Ollama models are required:
-
-| Model Type | Model Name | Context Window / Dimension | Purpose | Pull Command |
-| :--- | :--- | :--- | :--- | :--- |
-| **Embedding Model** | `nomic-embed-text` | 768 Dimensions, 8,192 Context | Vector embedding of threat intelligence documents in ChromaDB | `ollama pull nomic-embed-text` |
-| **Reasoning LLM** | `gemma4:e2b` | 7.2B Parameters ($T=0.1$) | Grounded 5-section DFIR report generation | `ollama pull gemma4:e2b` |
-
----
-
-## 📈 Project Roadmap & Phase Status
-
-- [x] **Phase 1: Lab Environment & Monitoring Infrastructure Setup**
-  * Windows 11 Target VM + Ubuntu Security Server setup with Sysmon & Wazuh.
-- [x] **Phase 2: Adversary Emulation & Manual Baseline Tracking**
-  * Emulated attack scenarios (SAM Dump `T1003.002`, PowerShell `T1059.001`, Scheduled Task `T1053.005`) measuring manual SOC baseline ($33.1\text{ mins}$).
-- [x] **Phase 3: Autonomous Event-Driven Evidence Collector**
-  * Built `app.py` Flask listener and OpenSearch poller engine generating structured JSON evidence packages.
-- [x] **Phase 4: Knowledge Retrieval Engine (RAG)**
-  * On-premise vector store indexing threat intelligence and playbooks with ChromaDB and `nomic-embed-text`.
-- [x] **Phase 5: Explainable LLM Reasoning & Incident Reporting**
-  * Local Ollama reasoning pipeline generating 5-section DFIR reports (`forenrag_reasoner.py`).
-- [x] **Phase 6: Framework Evaluation & Performance Benchmarking**
-  * Evaluated across $N=9$ experimental trials, proving a **99.38% triage time reduction** ($12.35\text{s}$ vs $1,988\text{s}$).
-
----
-
-## ⚙️ Step-by-Step Lab Replication Guide
-
-Follow these exact steps to replicate the experimental laboratory and run ForenRAG on your system:
+## ⚙️ Step-by-Step Execution Guide
 
 ### Step 1: Install Dependencies & Setup Environment
-1. **Install `uv`** (Rust-based Python package manager):
+
+1. **Install `uv`** (Python package manager):
    ```bash
    curl -sSf https://astral.sh/uv/install.sh | sh
    ```
@@ -160,78 +157,82 @@ Follow these exact steps to replicate the experimental laboratory and run ForenR
    ollama pull nomic-embed-text
    ollama pull gemma4:e2b
    ```
-4. **Initialize Virtual Environment & Install Python Packages**:
+4. **Initialize Virtual Environment & Install Dependencies**:
    ```bash
-   cd /home/codeinfra/projects/research/ForenRAG
    uv sync
    ```
 5. **Configure Environment Variables (`.env`)**:
-   Copy `.env.example` to `.env` and set `OPENSEARCH_URL` to point to your Ubuntu Security Server VM (Wazuh / OpenSearch Indexer on Port 9200):
+   Copy `.env.example` to `.env` and fill in your OpenSearch server IP and credentials:
    ```bash
    cp .env.example .env
    ```
-   Edit `.env`:
-   ```bash
-   # OpenSearch Server Connection URL
-   # Replace <OPENSEARCH_IP> with the IP address of your Wazuh / OpenSearch Security Server VM (Port 9200)
-   OPENSEARCH_URL=https://<OPENSEARCH_IP>:9200
-   ```
 
 ---
 
-### Step 2: Build the Vector Database Index (Phase 4)
-Index the open-source threat intelligence documents from `./knowledge_base/` into ChromaDB:
+### Step 2: Build Vector Database Index (`build_chroma_db.py`)
+
+Index threat intelligence documents from `./knowledge_base/` into ChromaDB:
+
 ```bash
 uv run python build_chroma_db.py
 ```
-*Expected Output*: `Indexed 496 text chunks into ChromaDB collection 'forenrag_kb'`.
 
 ---
 
-### Step 3: Start the Autonomous ForenRAG Agent (Phases 3, 4 & 5)
-Run the central agent script:
+### Step 3: Launch Autonomous Agent (`app.py`)
+
+Start the central telemetry collector and automated reasoning engine:
+
 ```bash
 uv run python app.py
 ```
-*The agent will:*
-* Start a Flask REST server on `http://0.0.0.0:5000/alert` listening for real-time Wazuh webhooks.
-* Asynchronously poll OpenSearch `wazuh-alerts-*` every 3 seconds for critical alerts ($\text{Rule Level} \ge 12$).
-* Automatically trace 128-bit process trees, query ChromaDB, and invoke `gemma4:e2b` to save evidence JSON and markdown reports in `./evidence_packages/XXX_incident_.../`.
 
 ---
 
-### Step 4: Execute Attack Scenarios on Windows 11 VM
+### Step 4: Execute Adversary Emulation Suite (Atomic Red Team)
 
-While `app.py` is running, execute any of the 3 adversary emulation scenarios on your **Windows 11 VM**:
+While `app.py` is running, execute any of the **5 Benchmark Attack Scenarios** using Atomic Red Team on your **Windows 11 Victim Client**:
 
-#### **Scenario A: SAM Registry Hive Dump (`T1003.002`)**
-Open **Command Prompt as Administrator**:
-```cmd
-"C:\WINDOWS\system32\reg.exe" save HKEY_LOCAL_MACHINE\SAM C:\Windows\Temp\sam.bak
+#### 1️⃣ Scenario 1: SAM Registry Dump (`T1003.002` - Test #1)
+```powershell
+Invoke-AtomicTest T1003.002 -TestNumbers 1
+Invoke-AtomicTest T1003.002 -TestNumbers 1 -Cleanup
 ```
 
-#### **Scenario B: Hidden PowerShell Execution (`T1059.001`)**
-Open **PowerShell as Administrator**:
+#### 2️⃣ Scenario 2: PowerShell Command Execution (`T1059.001` - Test #17)
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -Command "Start-Process calc.exe"
+Invoke-AtomicTest T1059.001 -TestNumbers 17
+Invoke-AtomicTest T1059.001 -TestNumbers 17 -Cleanup
 ```
 
-#### **Scenario C: Scheduled Task Persistence (`T1053.005`)**
-Open **PowerShell as Administrator**:
+#### 3️⃣ Scenario 3: Ingress Tool Transfer via GUP.exe (`T1105` - Test #30)
 ```powershell
-powershell -Command "schtasks /create /tn T1053_005_OnLogon /sc onlogon /tr 'cmd.exe /c calc.exe'; schtasks /delete /tn T1053_005_OnLogon /f"
+Invoke-AtomicTest T1105 -TestNumbers 30 -GetPrereqs
+Invoke-AtomicTest T1105 -TestNumbers 30
+Invoke-AtomicTest T1105 -TestNumbers 30 -Cleanup
+```
+
+#### 4️⃣ Scenario 4: Scheduled Task Persistence (`T1053.005` - Test #1)
+```powershell
+Invoke-AtomicTest T1053.005 -TestNumbers 1
+Invoke-AtomicTest T1053.005 -TestNumbers 1 -Cleanup
+```
+
+#### 5️⃣ Scenario 5: Registry Run Key Persistence (`T1547.001` - Test #1)
+```powershell
+Invoke-AtomicTest T1547.001 -TestNumbers 1
+Invoke-AtomicTest T1547.001 -TestNumbers 1 -Cleanup
 ```
 
 ---
 
-### Step 5: Verify Generated Evidence & Reports
+### Step 5: Output Verification
 
-ForenRAG will automatically catch the alert, process the incident, and create a sequential output folder inside `evidence_packages/`:
+ForenRAG automatically detects the intrusion alert, extracts the evidence graph, queries ChromaDB, and generates an output package inside `evidence_packages/`:
 
 ```text
 evidence_packages/
-├── 001_incident_20260723_222415_T1105/
-│   ├── evidence.json        # Standardized Sysmon JSON evidence package
-│   └── forensic_report.md  # Grounded 5-section explainable DFIR report
+└── 001_incident_20260802_065744_T1053.005/
+    ├── evidence.json        # Standardized Sysmon JSON telemetry package
+    └── forensic_report.md  # Grounded 5-section explainable DFIR report
 ```
-
