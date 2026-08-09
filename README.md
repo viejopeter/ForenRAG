@@ -71,12 +71,16 @@ ForenRAG/
 
 ### 2. Knowledge Base Indexer (`build_chroma_db.py`)
 * Reads threat intelligence documents and playbooks from `./knowledge_base/` (`.md`, `.yml`, `.yaml`).
-* Splits documents into text chunks using LangChain `RecursiveCharacterTextSplitter` (configurable `CHROMA_CHUNK_SIZE` and `CHROMA_CHUNK_OVERLAP`).
+* Extracts and attaches standardized MITRE technique metadata tags (`metadata={"source": ..., "technique": "TXXXX.XXX"}`) for target technique isolation.
+* Splits documents into structured 1,000-character text chunks using LangChain `RecursiveCharacterTextSplitter` (`CHROMA_CHUNK_SIZE=1000`, `CHROMA_CHUNK_OVERLAP=150`) to preserve section headings alongside attack commands.
 * Computes vector embeddings via local Ollama embedding models (`EMBEDDING_MODEL`) and persists the vector store in `./chroma_db_storage/`.
 
 ### 3. RAG Retrieval Engine (`forenrag_retriever.py`)
-* Formulates similarity search queries using telemetry parameters (trigger rule description, MITRE technique IDs, and process image basenames).
-* Queries the local ChromaDB vector store (`forenrag_kb` collection) and retrieves the top-K threat passages (`RAG_TOP_K`) with distance scoring.
+* Formulates targeted search queries by extracting rule descriptions, MITRE technique IDs, and primary attack binaries while filtering out generic background binaries (`hostname.exe`, `whoami.exe`, `cmd.exe`).
+* Implements a two-stage hybrid retrieval pipeline:
+  * **Stage 1 (Metadata Filter)**: Queries ChromaDB with a `filter={"technique": primary_mitre}` constraint to retrieve exact technique playbooks.
+  * **Stage 2 (Similarity Search Fallback)**: Falls back to unguided dense vector similarity search if metadata filtering yields fewer than `top_k` passages.
+* Returns top-K threat passages (`RAG_TOP_K`) alongside query metadata for context-grounded reasoning.
 
 ### 4. LLM Reasoning Engine (`forenrag_reasoner.py`)
 * Formats raw Sysmon telemetry and retrieved RAG context into a grounded prompt template.

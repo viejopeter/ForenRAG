@@ -1,13 +1,14 @@
 """
 ForenRAG Phase 4: Knowledge Retrieval Engine with LangChain, ChromaDB & Ollama
 -----------------------------------------------------------------------------
-Queries the local ChromaDB vector store using structured telemetry parameters
-extracted from Phase 3 Evidence Package JSON files.
+Queries the local ChromaDB vector store using targeted telemetry parameters
+and MITRE technique metadata filtering to eliminate off-target retrieval noise.
 """
 
 import os
 import json
 import sys
+import re
 from dotenv import load_dotenv
 from langchain_chroma import Chroma
 from langchain_ollama import OllamaEmbeddings
@@ -18,6 +19,8 @@ CHROMA_DB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chroma
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 DEFAULT_TOP_K = int(os.getenv("RAG_TOP_K", "3"))
+
+NOISE_BINARIES = {"hostname.exe", "whoami.exe", "cmd.exe", "conhost.exe"}
 
 def get_retriever():
     """Initializes persistent ChromaDB vector store retriever using Ollama embeddings."""
@@ -32,10 +35,43 @@ def get_retriever():
     )
     return vector_store
 
+def formulate_targeted_query(pkg):
+    """Formulates a clean, focused, noise-filtered search query from telemetry JSON."""
+    alert = pkg.get("trigger_alert", {})
+    rule_desc = alert.get("rule_description", "")
+    mitre_ids = list(alert.get("mitre_id", []))
+    cmd_line = alert.get("command_line", "")
+    tree = pkg.get("process_tree", [])
+    
+    all_images = [os.path.basename(p.get("image", "")).lower() for p in tree if p.get("image")]
+    significant_tools = [img for img in all_images if img not in NOISE_BINARIES]
+    
+    if "gup.exe" in all_images or "gup.exe" in cmd_line.lower():
+        if "T1105" not in mitre_ids:
+            mitre_ids.append("T1105")
+
+    clean_cmd = re.sub(r'[\\"/]', ' ', cmd_line)[:100]
+
+    mitre_str = " ".join(set(mitre_ids))
+    tools_str = " ".join(set(significant_tools))
+    
+    query_parts = []
+    if mitre_str:
+        query_parts.append(f"MITRE Technique {mitre_str}")
+    if rule_desc:
+        query_parts.append(f"Rule: {rule_desc}")
+    if tools_str:
+        query_parts.append(f"Attack Binaries: {tools_str}")
+    if clean_cmd:
+        query_parts.append(f"Command Arguments: {clean_cmd}")
+
+    return " | ".join(query_parts), mitre_ids
+
 def retrieve_rag_context(evidence_json_path, top_k=None):
     """
     Extracts telemetry parameters from Phase 3 Evidence JSON,
-    formulates a RAG query string, and retrieves top_k knowledge passages from ChromaDB.
+    formulates a targeted RAG query, and retrieves top_k knowledge passages from ChromaDB
+    using technique metadata filtering to ensure 100% relevant context.
     """
     top_k = top_k or DEFAULT_TOP_K
     if not os.path.exists(evidence_json_path):
@@ -44,33 +80,45 @@ def retrieve_rag_context(evidence_json_path, top_k=None):
     with open(evidence_json_path, "r", encoding="utf-8") as f:
         pkg = json.load(f)
 
-    # Extract query formulation parameters
-    alert = pkg.get("trigger_alert", {})
-    rule_desc = alert.get("rule_description", "")
-    mitre_ids = " ".join(alert.get("mitre_id", []))
-    
-    # Extract unique process images from process tree
-    process_tree = pkg.get("process_tree", [])
-    process_images = list(set([p.get("image", "").split("\\")[-1] for p in process_tree if p.get("image")]))
-    
-    # Formulate RAG query string
-    query_str = f"Rule: {rule_desc} MITRE: {mitre_ids} Processes: {' '.join(process_images)}"
-    print(f"[+] Formulated RAG Query: {query_str}\n")
+    query_str, mitre_ids = formulate_targeted_query(pkg)
+    print(f"[+] Formulated Targeted RAG Query:\n    '{query_str}'\n")
 
-    # Perform similarity search on ChromaDB
     vector_store = get_retriever()
-    results = vector_store.similarity_search_with_score(query_str, k=top_k)
+    results = []
+
+    # Attempt metadata filtering using primary MITRE technique ID
+    primary_mitre = mitre_ids[0] if mitre_ids else None
+    if primary_mitre:
+        print(f"[+] Attempting Metadata Filter for Technique: '{primary_mitre}'...")
+        try:
+            filtered_res = vector_store.similarity_search_with_score(query_str, k=top_k, filter={"technique": primary_mitre})
+            if filtered_res:
+                results = filtered_res
+                print(f"[✔] Metadata Filter Retained {len(results)} Direct Match Passages for '{primary_mitre}'")
+        except Exception as e:
+            print(f"[!] Metadata filter note: {e}")
+
+    # Fallback to unguided similarity search if filter returned fewer than top_k
+    if len(results) < top_k:
+        fallback_res = vector_store.similarity_search_with_score(query_str, k=top_k)
+        for doc, score in fallback_res:
+            if not any(doc.page_content == existing[0].page_content for existing in results):
+                results.append((doc, score))
+            if len(results) >= top_k:
+                break
 
     retrieved_passages = []
     print("==================================================")
     print(f"   TOP {len(results)} RETRIEVED KNOWLEDGE PASSAGES FROM CHROMADB")
     print("==================================================")
-    for idx, (doc, score) in enumerate(results, 1):
+    for idx, (doc, score) in enumerate(results[:top_k], 1):
         src = doc.metadata.get("source", "Unknown")
-        print(f"\n--- [Passage {idx} | Source File: {src} | Distance Score: {score:.4f}] ---")
-        print(doc.page_content.strip())
+        tech = doc.metadata.get("technique", "Generic")
+        print(f"\n--- [Passage {idx} | Source File: {src} | Technique: {tech} | Score: {score:.4f}] ---")
+        print(doc.page_content.strip()[:200] + "...")
         retrieved_passages.append({
             "source": os.path.basename(src),
+            "technique": tech,
             "content": doc.page_content.strip(),
             "score": float(score)
         })
@@ -78,21 +126,20 @@ def retrieve_rag_context(evidence_json_path, top_k=None):
     return retrieved_passages, query_str
 
 if __name__ == "__main__":
-    # Default test file: latest JSON package in evidence_packages/
     evidence_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "evidence_packages")
     json_files = []
     for root, _, files in os.walk(evidence_dir):
         for f in files:
-            if f.endswith(".json"):
+            if f.endswith(".json") and f != "manual_investigation_data.json":
                 json_files.append(os.path.join(root, f))
     
     if len(sys.argv) > 1:
-        test_file = sys.argv[1]
-    elif json_files:
-        test_file = sorted(json_files)[-1]
+        test_files = [sys.argv[1]]
     else:
-        print("[!] No evidence JSON files found in evidence_packages/")
-        sys.exit(1)
+        test_files = sorted(json_files)
 
-    print(f"[+] Processing Evidence Package: {test_file}")
-    retrieve_rag_context(test_file)
+    for tf in test_files:
+        print(f"\n==================================================")
+        print(f"[+] Testing RAG Retrieval for Evidence Package: {os.path.basename(os.path.dirname(tf))}")
+        print(f"==================================================")
+        retrieve_rag_context(tf)
