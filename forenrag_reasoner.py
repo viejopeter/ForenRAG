@@ -16,7 +16,7 @@ from forenrag_retriever import retrieve_rag_context
 
 load_dotenv()
 
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma2:2b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:e2b")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))
 LLM_NUM_CTX = int(os.getenv("LLM_NUM_CTX", "8192"))
@@ -26,10 +26,13 @@ def format_evidence_summary(pkg):
     alert = pkg.get("trigger_alert", {})
     tree = pkg.get("process_tree", [])
     artifacts = pkg.get("artifacts", {})
+    detector_techniques = pkg.get("detector_techniques", alert.get("mitre_id", []))
+    analysis_techniques = pkg.get("analysis_techniques", detector_techniques)
     
     summary_lines = [
         f"- Trigger Rule: {alert.get('rule_description')} (Rule Level {alert.get('rule_level')})",
-        f"- MITRE Technique IDs: {', '.join(alert.get('mitre_id', []))}",
+        f"- Detector MITRE Technique IDs: {', '.join(detector_techniques)}",
+        f"- Evidence-derived Analysis Technique IDs: {', '.join(analysis_techniques)}",
         f"- Trigger Timestamp: {alert.get('timestamp')}",
         "\n--- Process Execution Lineage ---"
     ]

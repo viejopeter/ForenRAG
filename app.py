@@ -17,6 +17,7 @@ import threading
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
+from technique_inference import derive_technique_metadata
 
 load_dotenv()
 
@@ -190,11 +191,13 @@ def finalize_session(parent_guid):
     tree = trace_process_tree(target_guid)
     guids = [p["process_guid"] for p in tree] if tree else [target_guid]
     artifacts = collect_artifacts(guids)
-    
+    technique_metadata = derive_technique_metadata(primary_alert, tree)
+
     package = {
         "collection_timestamp": datetime.now(timezone.utc).isoformat(),
         "collection_latency_seconds": round(time.time() - start_t, 3),
         "trigger_alert": primary_alert,
+        **technique_metadata,
         "process_tree": tree,
         "artifacts": artifacts,
         "all_session_alerts": alerts
@@ -205,8 +208,8 @@ def finalize_session(parent_guid):
     next_idx = len(existing_dirs) + 1
     
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    mitre_ids = primary_alert.get("mitre_id", [])
-    mitre_suffix = f"_{mitre_ids[0]}" if mitre_ids else ""
+    analysis_techniques = technique_metadata["analysis_techniques"]
+    mitre_suffix = f"_{analysis_techniques[0]}" if analysis_techniques else ""
     folder_name = f"{next_idx:03d}_incident_{ts}{mitre_suffix}"
     
     incident_dir = os.path.join(OUTPUT_DIR, folder_name)

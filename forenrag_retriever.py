@@ -6,12 +6,14 @@ and MITRE technique metadata filtering to eliminate off-target retrieval noise.
 """
 
 import os
+import ntpath
 import json
 import sys
 import re
 from dotenv import load_dotenv
 from langchain_chroma import Chroma
 from langchain_ollama import OllamaEmbeddings
+from technique_inference import derive_technique_metadata
 
 load_dotenv()
 
@@ -21,6 +23,10 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 DEFAULT_TOP_K = int(os.getenv("RAG_TOP_K", "3"))
 
 NOISE_BINARIES = {"hostname.exe", "whoami.exe", "cmd.exe", "conhost.exe"}
+
+def _ordered_unique(values):
+    """Return non-empty values once while preserving evidence order."""
+    return list(dict.fromkeys(value for value in values if value))
 
 def get_retriever():
     """Initializes persistent ChromaDB vector store retriever using Ollama embeddings."""
@@ -39,21 +45,22 @@ def formulate_targeted_query(pkg):
     """Formulates a clean, focused, noise-filtered search query from telemetry JSON."""
     alert = pkg.get("trigger_alert", {})
     rule_desc = alert.get("rule_description", "")
-    mitre_ids = list(alert.get("mitre_id", []))
-    cmd_line = alert.get("command_line", "")
     tree = pkg.get("process_tree", [])
+    mitre_ids = _ordered_unique(pkg.get("analysis_techniques", []))
+    if not mitre_ids:
+        mitre_ids = derive_technique_metadata(alert, tree)["analysis_techniques"]
+    cmd_line = alert.get("command_line", "")
     
-    all_images = [os.path.basename(p.get("image", "")).lower() for p in tree if p.get("image")]
-    significant_tools = [img for img in all_images if img not in NOISE_BINARIES]
+    # Evidence contains Windows paths, even when ForenRAG runs on Linux. Using
+    # os.path.basename() on Linux leaves backslash-delimited paths unchanged.
+    all_image_paths = [p.get("image", "") for p in tree if p.get("image")]
+    all_images = [ntpath.basename(path).lower() for path in all_image_paths]
+    significant_tools = _ordered_unique(img for img in all_images if img not in NOISE_BINARIES)
     
-    if "gup.exe" in all_images or "gup.exe" in cmd_line.lower():
-        if "T1105" not in mitre_ids:
-            mitre_ids.append("T1105")
-
     clean_cmd = re.sub(r'[\\"/]', ' ', cmd_line)[:100]
 
-    mitre_str = " ".join(set(mitre_ids))
-    tools_str = " ".join(set(significant_tools))
+    mitre_str = " ".join(mitre_ids)
+    tools_str = " ".join(significant_tools)
     
     query_parts = []
     if mitre_str:
@@ -130,7 +137,7 @@ if __name__ == "__main__":
     json_files = []
     for root, _, files in os.walk(evidence_dir):
         for f in files:
-            if f.endswith(".json") and f != "manual_investigation_data.json":
+            if f.endswith(".json"):
                 json_files.append(os.path.join(root, f))
     
     if len(sys.argv) > 1:
