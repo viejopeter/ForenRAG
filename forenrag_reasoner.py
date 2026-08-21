@@ -27,6 +27,7 @@ LLM_NUM_CTX = int(os.getenv("LLM_NUM_CTX", "16384"))
 LLM_NUM_PREDICT = int(os.getenv("LLM_NUM_PREDICT", "6144"))
 TIMELINE_PLACEHOLDER = "[[DETERMINISTIC_TIMELINE]]"
 TRACEABILITY_PLACEHOLDER = "[[DETERMINISTIC_EVIDENCE_TRACEABILITY]]"
+ATTACK_MAPPING_PLACEHOLDER = "[[DETERMINISTIC_ATTACK_MAPPING]]"
 
 def _parse_timestamp(value):
     """Parse evidence timestamps for deterministic chronological sorting."""
@@ -36,6 +37,33 @@ def _markdown_cell(value):
     """Render untrusted evidence text safely inside a Markdown table cell."""
     text = html.unescape(str(value or ""))
     return text.replace("|", "\\|").replace("`", "\\`").replace("\r", " ").replace("\n", " ")
+
+def resolve_technique_metadata(retrieved_passages):
+    """Resolve canonical names from Chroma metadata and reject conflicts."""
+    names = {}
+    sources = {}
+    for passage in retrieved_passages:
+        technique_id = passage.get("technique")
+        technique_name = passage.get("technique_name")
+        if not technique_id or not technique_name:
+            continue
+        existing_name = names.get(technique_id)
+        if existing_name and existing_name != technique_name:
+            raise ValueError(
+                f"Conflicting Chroma technique names for {technique_id}: "
+                f"'{existing_name}' and '{technique_name}'"
+            )
+        names[technique_id] = technique_name
+        sources.setdefault(technique_id, passage.get("source", "Unknown"))
+    return names, sources
+
+def format_technique_labels(technique_ids, technique_names):
+    """Format Chroma-derived labels, using ID-only when no name is available."""
+    return [
+        f"{technique_id} ({technique_names[technique_id]})"
+        if technique_id in technique_names else technique_id
+        for technique_id in technique_ids
+    ]
 
 def build_timeline_table(pkg):
     """Build an exact chronological process timeline without LLM transformation."""
@@ -155,6 +183,37 @@ def build_evidence_traceability(pkg):
 
     return "\n".join(lines)
 
+def build_attack_mapping(pkg, retrieved_passages):
+    """Render ATT&CK names deterministically from retrieved Chroma metadata."""
+    technique_names, technique_sources = resolve_technique_metadata(retrieved_passages)
+    alert = pkg.get("trigger_alert", {})
+    technique_ids = list(dict.fromkeys(
+        pkg.get("analysis_techniques")
+        or pkg.get("detector_techniques")
+        or alert.get("mitre_id", [])
+    ))
+    lines = [
+        "#### Authoritative ATT&CK Mapping",
+        "| Technique ID | Canonical technique name | Local knowledge source |",
+        "|---|---|---|",
+    ]
+    if technique_ids:
+        for technique_id in technique_ids:
+            canonical_name = technique_names.get(technique_id, "Name unavailable in retrieved Chroma metadata")
+            source = technique_sources.get(technique_id, "Not available in retrieved passages")
+            lines.append(
+                f"| `{_markdown_cell(technique_id)}` "
+                f"| {_markdown_cell(canonical_name)} "
+                f"| `{_markdown_cell(source)}` |"
+            )
+    else:
+        lines.append("| Not identified | Not identified | Not available |")
+
+    lines.append(
+        "Technique names above are derived from retrieved Chroma metadata, not generated from model memory."
+    )
+    return "\n".join(lines)
+
 def inject_timeline(report, timeline):
     """Replace the model placeholder, or its Section 2 body, with the exact timeline."""
     if TIMELINE_PLACEHOLDER in report:
@@ -189,19 +248,38 @@ def inject_traceability(report, traceability):
         count=1,
     )
 
-def format_evidence_summary(pkg):
+def inject_attack_mapping(report, attack_mapping):
+    """Replace the model's Section 4 body with the knowledge-derived mapping."""
+    if ATTACK_MAPPING_PLACEHOLDER in report:
+        return report.replace(ATTACK_MAPPING_PLACEHOLDER, attack_mapping)
+
+    section_pattern = re.compile(
+        r"(^#{1,6}\s+4\..*?$).*?(?=^#{1,6}\s+5\.)",
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if not section_pattern.search(report):
+        raise ValueError("Generated report omitted the required Section 4 ATT&CK mapping location")
+    return section_pattern.sub(
+        lambda match: f"{match.group(1)}\n\n{attack_mapping}\n\n",
+        report,
+        count=1,
+    )
+
+def format_evidence_summary(pkg, technique_names=None):
     """Formats raw Sysmon JSON payload into structured text blocks for strictly grounded telemetry LLM reasoning."""
     alert = pkg.get("trigger_alert", {})
     tree = pkg.get("process_tree", [])
     artifacts = pkg.get("artifacts", {})
     detector_techniques = pkg.get("detector_techniques", alert.get("mitre_id", []))
     analysis_techniques = pkg.get("analysis_techniques", detector_techniques)
+    authoritative_labels = format_technique_labels(analysis_techniques, technique_names or {})
     
     summary_lines = [
         f"- Trigger Rule: {alert.get('rule_description')} (Rule Level {alert.get('rule_level')})",
         f"- Trigger Rule ID: {alert.get('rule_id')}",
         f"- Detector MITRE Technique IDs: {', '.join(detector_techniques)}",
         f"- Evidence-derived Analysis Technique IDs: {', '.join(analysis_techniques)}",
+        f"- Authoritative Local Knowledge Technique Labels: {', '.join(authoritative_labels)}",
         f"- Trigger Timestamp: {alert.get('timestamp')}",
         f"- Trigger Process GUID: {alert.get('process_guid')}",
         f"- Trigger Parent Process GUID: {alert.get('parent_guid')}",
@@ -283,7 +361,8 @@ def generate_forensic_report(evidence_json_path, model_name=None):
     with open(evidence_json_path, "r", encoding="utf-8") as f:
         pkg = json.load(f)
 
-    evidence_text = format_evidence_summary(pkg)
+    technique_names, _ = resolve_technique_metadata(retrieved_passages)
+    evidence_text = format_evidence_summary(pkg, technique_names)
 
     # Step 3: Define Explainable DFIR Grounding Prompt Template
     prompt_template = """You are ForenRAG, an expert Digital Forensics and Incident Response (DFIR) analyst.
@@ -309,7 +388,7 @@ MANDATORY GROUNDING RULES:
 8. Do not label a file as a payload, malware, dropper, executable script, IOC, or obfuscated content without supporting execution, content, detection, or reputation evidence.
 9. A filename matching __PSScriptPolicyTest_*.ps1 is consistent with a PowerShell execution-policy test. Do not classify it as malicious solely because it is a script in a temporary directory.
 10. Do not describe registry activity as persistence, staging, or attacker activity unless the target and behavior directly support that conclusion. Explorer NotifyIconSettings publisher updates are not evidence of persistence by themselves.
-11. Map only ATT&CK techniques directly supported by collected evidence. Use the correct ATT&CK tactic names and IDs. Do not add a technique based only on a tool being present.
+11. Map only ATT&CK techniques directly supported by collected evidence. Canonical technique names come from the Authoritative Local Knowledge Technique Labels. Never substitute, rename, or guess a technique name.
 12. Distinguish clearly between Observed facts, Inferences, Background context, and Unknown or unconfirmed outcomes. Use calibrated language and explicitly identify uncertainty.
 13. Do not call a user unauthorized or an activity adversary-controlled unless identity or authorization evidence supports that conclusion. You may classify behavior as suspicious or consistent with a technique.
 14. Do not claim credentials were obtained or compromised merely because registry-save commands were launched.
@@ -319,7 +398,7 @@ Provide a structured report with these sections:
 1. Executive Summary & Severity Rating
 2. Chronological Timeline & Process Lineage Analysis. Under this heading, output only the exact placeholder [[DETERMINISTIC_TIMELINE]]. Do not construct, summarize, or reproduce the timeline yourself.
 3. Evidence Traceability. Under this heading, output only the exact placeholder [[DETERMINISTIC_EVIDENCE_TRACEABILITY]]. Do not reproduce process identifiers, timestamps, lineage, commands, file events, or registry events yourself.
-4. MITRE ATT&CK Mapping & LOLBAS Identification
+4. MITRE ATT&CK Mapping & LOLBAS Identification. Under this heading, output only the exact placeholder [[DETERMINISTIC_ATTACK_MAPPING]]. Do not generate, modify, or reproduce ATT&CK IDs, names, or LOLBAS mappings yourself.
 5. Evidence Limitations & Unconfirmed Outcomes
 6. Recommended Response & Remediation Playbook
 
@@ -350,6 +429,7 @@ FORENSIC REPORT:"""
     response = llm.invoke(formatted_prompt)
     response = inject_timeline(response, build_timeline_table(pkg))
     response = inject_traceability(response, build_evidence_traceability(pkg))
+    response = inject_attack_mapping(response, build_attack_mapping(pkg, retrieved_passages))
 
     print("\n==================================================")
     print("   GENERATED EXPLAINABLE FORENSIC INVESTIGATION REPORT")

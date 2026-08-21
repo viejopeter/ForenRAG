@@ -37,6 +37,15 @@ def extract_technique_id(filename, content):
         return content_match.group(0)
     return "GENERIC"
 
+def extract_technique_name(technique_id, content):
+    """Extract the canonical name paired with a technique ID in a document heading."""
+    heading_match = re.search(
+        rf"^#\s+{re.escape(technique_id)}\s+-\s+(.+?)\s*$",
+        content,
+        flags=re.MULTILINE,
+    )
+    return heading_match.group(1).strip() if heading_match else ""
+
 def build_vector_store():
     print(f"[+] Loading knowledge base documents from: {KB_DIR}")
     if not os.path.exists(KB_DIR):
@@ -48,11 +57,16 @@ def build_vector_store():
             fpath = os.path.join(KB_DIR, fname)
             with open(fpath, "r", encoding="utf-8") as f:
                 content = f.read()
-                tech_id = extract_technique_id(fname, content)
-                raw_documents.append(Document(
-                    page_content=content,
-                    metadata={"source": fname, "technique": tech_id}
-                ))
+            tech_id = extract_technique_id(fname, content)
+            tech_name = extract_technique_name(tech_id, content)
+            raw_documents.append(Document(
+                page_content=content,
+                metadata={
+                    "source": fname,
+                    "technique": tech_id,
+                    "technique_name": tech_name,
+                }
+            ))
         
     print(f"[+] Loaded {len(raw_documents)} raw document files.")
 

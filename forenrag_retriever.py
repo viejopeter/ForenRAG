@@ -168,11 +168,13 @@ def retrieve_rag_context(evidence_json_path, top_k=None):
     for idx, (doc, score) in enumerate(results[:top_k], 1):
         src = doc.metadata.get("source", "Unknown")
         tech = doc.metadata.get("technique", "Generic")
+        tech_name = doc.metadata.get("technique_name", "")
         print(f"\n--- [Passage {idx} | Source File: {src} | Technique: {tech} | Score: {score:.4f}] ---")
         print(doc.page_content.strip()[:200] + "...")
         retrieved_passages.append({
             "source": os.path.basename(src),
             "technique": tech,
+            "technique_name": tech_name,
             "content": doc.page_content.strip(),
             "score": float(score)
         })
