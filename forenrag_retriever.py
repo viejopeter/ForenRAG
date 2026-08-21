@@ -10,6 +10,7 @@ import ntpath
 import json
 import sys
 import re
+import html
 from dotenv import load_dotenv
 from langchain_chroma import Chroma
 from langchain_ollama import OllamaEmbeddings
@@ -21,12 +22,37 @@ CHROMA_DB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chroma
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 DEFAULT_TOP_K = int(os.getenv("RAG_TOP_K", "3"))
+DEFAULT_CANDIDATE_MULTIPLIER = int(os.getenv("RAG_CANDIDATE_MULTIPLIER", "4"))
 
 NOISE_BINARIES = {"hostname.exe", "whoami.exe", "cmd.exe", "conhost.exe"}
+QUERY_STOP_WORDS = {
+    "attack", "binaries", "command", "exe", "mitre", "rule", "technique",
+    "the", "to", "used", "using", "windows",
+}
 
 def _ordered_unique(values):
     """Return non-empty values once while preserving evidence order."""
     return list(dict.fromkeys(value for value in values if value))
+
+def _search_terms(text):
+    """Extract procedure-specific terms for lightweight lexical reranking."""
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+(?:\.[a-z0-9]+)?", text.lower())
+        if len(token) > 2 and token not in QUERY_STOP_WORDS
+    }
+
+def _rerank_results(results, query_str):
+    """Prefer passages that match observed tools and procedures, then vector distance."""
+    query_terms = _search_terms(query_str)
+
+    def rank_key(result):
+        doc, distance = result
+        passage_terms = _search_terms(doc.page_content)
+        overlap = len(query_terms & passage_terms)
+        return (-overlap, float(distance))
+
+    return sorted(results, key=rank_key)
 
 def get_retriever():
     """Initializes persistent ChromaDB vector store retriever using Ollama embeddings."""
@@ -49,7 +75,14 @@ def formulate_targeted_query(pkg):
     mitre_ids = _ordered_unique(pkg.get("analysis_techniques", []))
     if not mitre_ids:
         mitre_ids = derive_technique_metadata(alert, tree)["analysis_techniques"]
-    cmd_line = alert.get("command_line", "")
+    cmd_lines = [alert.get("command_line", "")]
+    cmd_lines.extend(
+        p.get("command_line", "")
+        for p in tree
+        if ntpath.basename(p.get("image", "")).lower()
+        not in {"hostname.exe", "whoami.exe", "conhost.exe"}
+    )
+    cmd_lines = _ordered_unique(cmd_lines)
     
     # Evidence contains Windows paths, even when ForenRAG runs on Linux. Using
     # os.path.basename() on Linux leaves backslash-delimited paths unchanged.
@@ -57,7 +90,15 @@ def formulate_targeted_query(pkg):
     all_images = [ntpath.basename(path).lower() for path in all_image_paths]
     significant_tools = _ordered_unique(img for img in all_images if img not in NOISE_BINARIES)
     
-    clean_cmd = re.sub(r'[\\"/]', ' ', cmd_line)[:100]
+    # Include correlated procedures, not only the triggering command. This helps
+    # distinguish different procedures that share the same ATT&CK technique.
+    clean_commands = []
+    for command in cmd_lines:
+        clean_command = re.sub(r'[\\"/&;|><%]+', ' ', html.unescape(command))
+        clean_command = " ".join(clean_command.split())
+        if clean_command:
+            clean_commands.append(clean_command)
+    clean_cmd = " ; ".join(clean_commands)[:750]
 
     mitre_str = " ".join(mitre_ids)
     tools_str = " ".join(significant_tools)
@@ -92,27 +133,33 @@ def retrieve_rag_context(evidence_json_path, top_k=None):
 
     vector_store = get_retriever()
     results = []
+    candidate_k = max(top_k, top_k * DEFAULT_CANDIDATE_MULTIPLIER)
 
     # Attempt metadata filtering using primary MITRE technique ID
     primary_mitre = mitre_ids[0] if mitre_ids else None
     if primary_mitre:
         print(f"[+] Attempting Metadata Filter for Technique: '{primary_mitre}'...")
         try:
-            filtered_res = vector_store.similarity_search_with_score(query_str, k=top_k, filter={"technique": primary_mitre})
+            filtered_res = vector_store.similarity_search_with_score(
+                query_str,
+                k=candidate_k,
+                filter={"technique": primary_mitre},
+            )
             if filtered_res:
-                results = filtered_res
-                print(f"[✔] Metadata Filter Retained {len(results)} Direct Match Passages for '{primary_mitre}'")
+                results = _rerank_results(filtered_res, query_str)[:top_k]
+                print(
+                    f"[✔] Metadata Filter Reranked {len(filtered_res)} Candidates "
+                    f"and Retained {len(results)} Passages for '{primary_mitre}'"
+                )
         except Exception as e:
             print(f"[!] Metadata filter note: {e}")
 
-    # Fallback to unguided similarity search if filter returned fewer than top_k
-    if len(results) < top_k:
-        fallback_res = vector_store.similarity_search_with_score(query_str, k=top_k)
-        for doc, score in fallback_res:
-            if not any(doc.page_content == existing[0].page_content for existing in results):
-                results.append((doc, score))
-            if len(results) >= top_k:
-                break
+    # Only use an unfiltered fallback when no technique-filtered passage exists.
+    # Returning fewer grounded passages is safer than padding context with a
+    # semantically adjacent but incident-irrelevant technique.
+    if not results:
+        fallback_res = vector_store.similarity_search_with_score(query_str, k=candidate_k)
+        results = _rerank_results(fallback_res, query_str)[:top_k]
 
     retrieved_passages = []
     print("==================================================")
