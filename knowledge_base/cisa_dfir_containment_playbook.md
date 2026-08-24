@@ -1,7 +1,7 @@
-# CISA & NIST SP 800-61r2 Digital Forensics & Incident Response (DFIR) Containment Playbook
+# Project DFIR Containment Notes Informed by CISA and NIST Guidance
 
 ## 1. Executive Summary & Regulatory Context
-This playbook outlines standardized Incident Response (IR) and containment procedures derived from CISA Incident Response Playbooks and NIST SP 800-61r2 (Computer Security Incident Handling Guide). It provides actionable remediation protocols for SOC analysts responding to host compromise, credential access, and persistent threat activity.
+This project-authored document condenses and reorganizes general incident-response concepts informed by CISA's 2021 Cybersecurity Incident Response Playbook and NIST SP 800-61r2. It adds Windows-specific commands, event identifiers, tools, registry paths, and operational recommendations for the ForenRAG laboratory. It is not an official CISA or NIST publication, has not been validated or endorsed by either agency, and should be reviewed by a qualified incident responder before use.
 
 ---
 
@@ -37,7 +37,7 @@ Download and execution of secondary payloads or script stagers (`__PSScriptPolic
 
 ---
 
-## 4. Playbook 3: Scheduled Task & Registry Persistence Containment (MITRE T1053.005 / T1546.011)
+## 4. Playbook 3: Scheduled Task & Registry Persistence Containment (MITRE T1053.005 / T1547.001)
 
 ### Target Activity
 Creation of persistent startup tasks or autorun registry keys via `schtasks.exe` or `reg.exe`.
