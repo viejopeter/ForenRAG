@@ -212,7 +212,10 @@ def finalize_session(parent_guid):
     mitre_suffix = f"_{analysis_techniques[0]}" if analysis_techniques else ""
     folder_name = f"{next_idx:03d}_incident_{ts}{mitre_suffix}"
     
-    incident_dir = os.path.join(OUTPUT_DIR, folder_name)
+    output_root = os.path.realpath(OUTPUT_DIR)
+    incident_dir = os.path.realpath(os.path.join(output_root, folder_name))
+    if os.path.commonpath((output_root, incident_dir)) != output_root:
+        raise ValueError("Incident directory resolved outside evidence_packages")
     os.makedirs(incident_dir, exist_ok=True)
     
     filepath = os.path.join(incident_dir, "evidence.json")

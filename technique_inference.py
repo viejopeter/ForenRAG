@@ -1,11 +1,28 @@
 """Evidence-derived ATT&CK technique normalization."""
 
 import ntpath
+import re
+
+
+ATTACK_TECHNIQUE_PATTERN = re.compile(r"^T\d{4}(?:\.\d{3})?$")
 
 
 def derive_technique_metadata(alert, process_tree):
     """Keep detector labels while deriving techniques from correlated evidence."""
-    detector_techniques = list(dict.fromkeys(alert.get("mitre_id", [])))
+    raw_techniques = alert.get("mitre_id", [])
+    if isinstance(raw_techniques, str):
+        raw_techniques = [raw_techniques]
+    if not isinstance(raw_techniques, list):
+        raw_techniques = []
+
+    detector_techniques = list(
+        dict.fromkeys(
+            technique
+            for technique in raw_techniques
+            if isinstance(technique, str)
+            and ATTACK_TECHNIQUE_PATTERN.fullmatch(technique)
+        )
+    )
     text_values = []
     for process in process_tree:
         text_values.extend(
