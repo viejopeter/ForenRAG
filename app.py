@@ -296,7 +296,7 @@ def seed_existing_alerts():
             "query": {
                 "bool": {
                     "must": [
-                        {"term": {"agent.id": "002"}},
+                        {"term": {"agent.id": DEFAULT_AGENT_ID}},
                         {"range": {"rule.level": {"gte": MIN_RULE_LEVEL}}}
                     ]
                 }
@@ -320,7 +320,7 @@ def start_opensearch_poller():
                 "query": {
                     "bool": {
                         "must": [
-                            {"term": {"agent.id": "002"}},
+                            {"term": {"agent.id": DEFAULT_AGENT_ID}},
                             {"range": {"rule.level": {"gte": MIN_RULE_LEVEL}}}
                         ],
                         "filter": [
