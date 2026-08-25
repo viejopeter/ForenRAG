@@ -1,24 +1,23 @@
-"""
-ForenRAG Phase 4: Knowledge Retrieval Engine with LangChain, ChromaDB & Ollama
------------------------------------------------------------------------------
-Queries the local ChromaDB vector store using targeted telemetry parameters
-and MITRE technique metadata filtering to eliminate off-target retrieval noise.
-"""
+"""Retrieve knowledge relevant to a forensic evidence package."""
 
-import os
-import ntpath
-import json
-import sys
-import re
 import html
+import json
+import ntpath
+import os
+import re
+import sys
+
 from dotenv import load_dotenv
 from langchain_chroma import Chroma
 from langchain_ollama import OllamaEmbeddings
+
 from technique_inference import derive_technique_metadata
 
 load_dotenv()
 
-CHROMA_DB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chroma_db_storage")
+CHROMA_DB_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "chroma_db_storage"
+)
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 DEFAULT_TOP_K = int(os.getenv("RAG_TOP_K", "3"))
@@ -26,13 +25,25 @@ DEFAULT_CANDIDATE_MULTIPLIER = int(os.getenv("RAG_CANDIDATE_MULTIPLIER", "4"))
 
 NOISE_BINARIES = {"hostname.exe", "whoami.exe", "cmd.exe", "conhost.exe"}
 QUERY_STOP_WORDS = {
-    "attack", "binaries", "command", "exe", "mitre", "rule", "technique",
-    "the", "to", "used", "using", "windows",
+    "attack",
+    "binaries",
+    "command",
+    "exe",
+    "mitre",
+    "rule",
+    "technique",
+    "the",
+    "to",
+    "used",
+    "using",
+    "windows",
 }
+
 
 def _ordered_unique(values):
     """Return non-empty values once while preserving evidence order."""
     return list(dict.fromkeys(value for value in values if value))
+
 
 def _search_terms(text):
     """Extract procedure-specific terms for lightweight lexical reranking."""
@@ -41,6 +52,7 @@ def _search_terms(text):
         for token in re.findall(r"[a-z0-9]+(?:\.[a-z0-9]+)?", text.lower())
         if len(token) > 2 and token not in QUERY_STOP_WORDS
     }
+
 
 def _rerank_results(results, query_str):
     """Prefer passages that match observed tools and procedures, then vector distance."""
@@ -54,21 +66,27 @@ def _rerank_results(results, query_str):
 
     return sorted(results, key=rank_key)
 
-def get_retriever():
-    """Initializes persistent ChromaDB vector store retriever using Ollama embeddings."""
-    if not os.path.exists(CHROMA_DB_DIR):
-        raise FileNotFoundError(f"ChromaDB directory '{CHROMA_DB_DIR}' not found. Run build_chroma_db.py first.")
 
-    embedding_function = OllamaEmbeddings(model=EMBEDDING_MODEL, base_url=OLLAMA_BASE_URL)
+def _get_vector_store():
+    """Initialize the persistent ChromaDB vector store with Ollama embeddings."""
+    if not os.path.exists(CHROMA_DB_DIR):
+        raise FileNotFoundError(
+            f"ChromaDB directory '{CHROMA_DB_DIR}' not found. Run build_chroma_db.py first."
+        )
+
+    embedding_function = OllamaEmbeddings(
+        model=EMBEDDING_MODEL, base_url=OLLAMA_BASE_URL
+    )
     vector_store = Chroma(
         persist_directory=CHROMA_DB_DIR,
         embedding_function=embedding_function,
-        collection_name="forenrag_kb"
+        collection_name="forenrag_kb",
     )
     return vector_store
 
+
 def formulate_targeted_query(pkg):
-    """Formulates a clean, focused, noise-filtered search query from telemetry JSON."""
+    """Build a retrieval query from collected telemetry."""
     alert = pkg.get("trigger_alert", {})
     rule_desc = alert.get("rule_description", "")
     tree = pkg.get("process_tree", [])
@@ -83,18 +101,20 @@ def formulate_targeted_query(pkg):
         not in {"hostname.exe", "whoami.exe", "conhost.exe"}
     )
     cmd_lines = _ordered_unique(cmd_lines)
-    
+
     # Evidence contains Windows paths, even when ForenRAG runs on Linux. Using
     # os.path.basename() on Linux leaves backslash-delimited paths unchanged.
     all_image_paths = [p.get("image", "") for p in tree if p.get("image")]
     all_images = [ntpath.basename(path).lower() for path in all_image_paths]
-    significant_tools = _ordered_unique(img for img in all_images if img not in NOISE_BINARIES)
-    
+    significant_tools = _ordered_unique(
+        img for img in all_images if img not in NOISE_BINARIES
+    )
+
     # Include correlated procedures, not only the triggering command. This helps
     # distinguish different procedures that share the same ATT&CK technique.
     clean_commands = []
     for command in cmd_lines:
-        clean_command = re.sub(r'[\\"/&;|><%]+', ' ', html.unescape(command))
+        clean_command = re.sub(r'[\\"/&;|><%]+', " ", html.unescape(command))
         clean_command = " ".join(clean_command.split())
         if clean_command:
             clean_commands.append(clean_command)
@@ -102,7 +122,7 @@ def formulate_targeted_query(pkg):
 
     mitre_str = " ".join(mitre_ids)
     tools_str = " ".join(significant_tools)
-    
+
     query_parts = []
     if mitre_str:
         query_parts.append(f"MITRE Technique {mitre_str}")
@@ -115,15 +135,14 @@ def formulate_targeted_query(pkg):
 
     return " | ".join(query_parts), mitre_ids
 
+
 def retrieve_rag_context(evidence_json_path, top_k=None):
-    """
-    Extracts telemetry parameters from Phase 3 Evidence JSON,
-    formulates a targeted RAG query, and retrieves top_k knowledge passages from ChromaDB
-    using technique metadata filtering to ensure 100% relevant context.
-    """
+    """Retrieve relevant knowledge passages for an evidence package."""
     top_k = top_k or DEFAULT_TOP_K
     if not os.path.exists(evidence_json_path):
-        raise FileNotFoundError(f"Evidence JSON package file not found: {evidence_json_path}")
+        raise FileNotFoundError(
+            f"Evidence JSON package file not found: {evidence_json_path}"
+        )
 
     with open(evidence_json_path, "r", encoding="utf-8") as f:
         pkg = json.load(f)
@@ -131,11 +150,10 @@ def retrieve_rag_context(evidence_json_path, top_k=None):
     query_str, mitre_ids = formulate_targeted_query(pkg)
     print(f"[+] Formulated Targeted RAG Query:\n    '{query_str}'\n")
 
-    vector_store = get_retriever()
+    vector_store = _get_vector_store()
     results = []
     candidate_k = max(top_k, top_k * DEFAULT_CANDIDATE_MULTIPLIER)
 
-    # Attempt metadata filtering using primary MITRE technique ID
     primary_mitre = mitre_ids[0] if mitre_ids else None
     if primary_mitre:
         print(f"[+] Attempting Metadata Filter for Technique: '{primary_mitre}'...")
@@ -148,17 +166,18 @@ def retrieve_rag_context(evidence_json_path, top_k=None):
             if filtered_res:
                 results = _rerank_results(filtered_res, query_str)[:top_k]
                 print(
-                    f"[✔] Metadata Filter Reranked {len(filtered_res)} Candidates "
+                    f"[+] Metadata Filter Reranked {len(filtered_res)} Candidates "
                     f"and Retained {len(results)} Passages for '{primary_mitre}'"
                 )
-        except Exception as e:
-            print(f"[!] Metadata filter note: {e}")
+        except Exception as exc:  # noqa: BLE001 - unfiltered retrieval is the fallback
+            print(f"[!] Metadata filter note: {exc}")
 
-    # Only use an unfiltered fallback when no technique-filtered passage exists.
-    # Returning fewer grounded passages is safer than padding context with a
-    # semantically adjacent but incident-irrelevant technique.
+    # Use unfiltered candidates only if filtering is unavailable, fails, or
+    # returns no passages; a non-empty filtered result is never padded.
     if not results:
-        fallback_res = vector_store.similarity_search_with_score(query_str, k=candidate_k)
+        fallback_res = vector_store.similarity_search_with_score(
+            query_str, k=candidate_k
+        )
         results = _rerank_results(fallback_res, query_str)[:top_k]
 
     retrieved_passages = []
@@ -169,33 +188,42 @@ def retrieve_rag_context(evidence_json_path, top_k=None):
         src = doc.metadata.get("source", "Unknown")
         tech = doc.metadata.get("technique", "Generic")
         tech_name = doc.metadata.get("technique_name", "")
-        print(f"\n--- [Passage {idx} | Source File: {src} | Technique: {tech} | Score: {score:.4f}] ---")
+        print(
+            f"\n--- [Passage {idx} | Source File: {src} | Technique: {tech} | Score: {score:.4f}] ---"
+        )
         print(doc.page_content.strip()[:200] + "...")
-        retrieved_passages.append({
-            "source": os.path.basename(src),
-            "technique": tech,
-            "technique_name": tech_name,
-            "content": doc.page_content.strip(),
-            "score": float(score)
-        })
+        retrieved_passages.append(
+            {
+                "source": os.path.basename(src),
+                "technique": tech,
+                "technique_name": tech_name,
+                "content": doc.page_content.strip(),
+                "score": float(score),
+            }
+        )
 
     return retrieved_passages, query_str
 
+
 if __name__ == "__main__":
-    evidence_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "evidence_packages")
+    evidence_dir = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "evidence_packages"
+    )
     json_files = []
     for root, _, files in os.walk(evidence_dir):
         for f in files:
             if f.endswith(".json"):
                 json_files.append(os.path.join(root, f))
-    
+
     if len(sys.argv) > 1:
         test_files = [sys.argv[1]]
     else:
         test_files = sorted(json_files)
 
     for tf in test_files:
-        print(f"\n==================================================")
-        print(f"[+] Testing RAG Retrieval for Evidence Package: {os.path.basename(os.path.dirname(tf))}")
-        print(f"==================================================")
+        print("\n==================================================")
+        print(
+            f"[+] Testing RAG Retrieval for Evidence Package: {os.path.basename(os.path.dirname(tf))}"
+        )
+        print("==================================================")
         retrieve_rag_context(tf)

@@ -19,6 +19,8 @@ docs/
 
 # Vector database storage (local generated)
 chroma_db_storage/
+chroma_db_storage.staging/
+chroma_db_storage.backup/
 
 # Evidence Packages: Keep folder structure tracked, ignore laboratory generated files
 evidence_packages/*

@@ -1,21 +1,21 @@
-"""
-ForenRAG Phase 5: Explainable AI Investigation Reasoning Engine
----------------------------------------------------------------
-Integrates Phase 3 Evidence Package + Phase 4 RAG Retrieved Knowledge
-and feeds it into local Ollama via LangChain to generate an explainable DFIR report.
-"""
+"""Generate a forensic report from an evidence package and retrieved context."""
 
-import os
-import json
-import sys
-import time
 import html
+import json
 import ntpath
+import os
 import re
-from datetime import datetime, timezone
+import stat
+import sys
+import tempfile
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+
 from dotenv import load_dotenv
-from langchain_ollama import OllamaLLM
 from langchain_core.prompts import PromptTemplate
+from langchain_ollama import OllamaLLM
+
 from forenrag_retriever import retrieve_rag_context
 
 load_dotenv()
@@ -29,14 +29,82 @@ TIMELINE_PLACEHOLDER = "[[DETERMINISTIC_TIMELINE]]"
 TRACEABILITY_PLACEHOLDER = "[[DETERMINISTIC_EVIDENCE_TRACEABILITY]]"
 ATTACK_MAPPING_PLACEHOLDER = "[[DETERMINISTIC_ATTACK_MAPPING]]"
 
+
 def _parse_timestamp(value):
     """Parse evidence timestamps for deterministic chronological sorting."""
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if not isinstance(value, str):
+        raise TypeError(
+            f"Evidence timestamp must be an ISO 8601 string, got {type(value).__name__}: {value!r}"
+        )
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid evidence timestamp {value!r}; expected an ISO 8601 timestamp"
+        ) from exc
+
+
+def _derive_report_path(evidence_path):
+    """Derive a distinct Markdown report path from a JSON evidence path."""
+    if evidence_path.suffix != ".json":
+        raise ValueError(f"Evidence input must be a .json file: {evidence_path}")
+
+    if evidence_path.name == "evidence.json":
+        report_path = evidence_path.with_name("forensic_report.md")
+    else:
+        report_path = evidence_path.with_name(f"{evidence_path.stem}_report.md")
+
+    paths_match = evidence_path.resolve() == report_path.resolve()
+    if not paths_match and evidence_path.exists() and report_path.exists():
+        paths_match = evidence_path.samefile(report_path)
+    if paths_match:
+        raise ValueError(
+            f"Evidence input and report output must be different files: {evidence_path}"
+        )
+    return report_path
+
+
+def _atomic_write_text(path, content):
+    """Atomically replace a text file using a temporary file beside it."""
+    existing_mode = None
+    try:
+        existing_mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        pass
+
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+            temp_file.write(content)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        if existing_mode is not None:
+            temp_path.chmod(existing_mode)
+        os.replace(temp_path, path)
+    except Exception:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise
+
 
 def _markdown_cell(value):
     """Render untrusted evidence text safely inside a Markdown table cell."""
     text = html.unescape(str(value or ""))
-    return text.replace("|", "\\|").replace("`", "\\`").replace("\r", " ").replace("\n", " ")
+    return (
+        text.replace("|", "\\|")
+        .replace("`", "\\`")
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
+
 
 def resolve_technique_metadata(retrieved_passages):
     """Resolve canonical names from Chroma metadata and reject conflicts."""
@@ -57,27 +125,30 @@ def resolve_technique_metadata(retrieved_passages):
         sources.setdefault(technique_id, passage.get("source", "Unknown"))
     return names, sources
 
+
 def format_technique_labels(technique_ids, technique_names):
     """Format Chroma-derived labels, using ID-only when no name is available."""
     return [
         f"{technique_id} ({technique_names[technique_id]})"
-        if technique_id in technique_names else technique_id
+        if technique_id in technique_names
+        else technique_id
         for technique_id in technique_ids
     ]
+
 
 def build_timeline_table(pkg):
     """Build an exact chronological process timeline without LLM transformation."""
     processes = sorted(
         pkg.get("process_tree", []),
-        key=lambda proc: _parse_timestamp(proc.get("timestamp", "9999-12-31T23:59:59+00:00")),
+        key=lambda proc: _parse_timestamp(
+            proc.get("timestamp", "9999-12-31T23:59:59+00:00")
+        ),
     )
     if not processes:
         return "No process creation events were collected."
 
     processes_by_guid = {
-        proc.get("process_guid"): proc
-        for proc in processes
-        if proc.get("process_guid")
+        proc.get("process_guid"): proc for proc in processes if proc.get("process_guid")
     }
     lines = [
         "| Timestamp (UTC) | PID | Process | Process GUID | Parent Process | Parent GUID | User | Integrity | Command Line |",
@@ -87,7 +158,9 @@ def build_timeline_table(pkg):
         parent_guid = proc.get("parent_process_guid")
         parent = processes_by_guid.get(parent_guid, {})
         parent_image = parent.get("image")
-        parent_name = ntpath.basename(parent_image) if parent_image else "Not present in evidence"
+        parent_name = (
+            ntpath.basename(parent_image) if parent_image else "Not present in evidence"
+        )
         lines.append(
             f"| {_markdown_cell(proc.get('timestamp'))} "
             f"| {_markdown_cell(proc.get('process_id'))} "
@@ -102,11 +175,14 @@ def build_timeline_table(pkg):
 
     start = processes[0].get("timestamp")
     end = processes[-1].get("timestamp")
-    lines.extend([
-        "",
-        f"**Observed process activity window:** {_markdown_cell(start)} to {_markdown_cell(end)}.",
-    ])
+    lines.extend(
+        [
+            "",
+            f"**Observed process activity window:** {_markdown_cell(start)} to {_markdown_cell(end)}.",
+        ]
+    )
     return "\n".join(lines)
+
 
 def build_evidence_traceability(pkg):
     """Render observed artifacts exactly and keep command outcomes unconfirmed."""
@@ -116,11 +192,13 @@ def build_evidence_traceability(pkg):
     registry_sets = artifacts.get("registry_sets", [])
 
     reg_commands = [
-        proc for proc in processes
+        proc
+        for proc in processes
         if ntpath.basename(proc.get("image", "")).lower() == "reg.exe"
     ]
     cleanup_commands = [
-        proc for proc in processes
+        proc
+        for proc in processes
         if ntpath.basename(proc.get("image", "")).lower() == "cmd.exe"
         and " del " in f" {html.unescape(proc.get('command_line') or '').lower()} "
     ]
@@ -144,11 +222,15 @@ def build_evidence_traceability(pkg):
 
     lines.extend(["", "#### Observed File Creation Events"])
     if file_creations:
-        lines.extend([
-            "| Timestamp (UTC) | Process | Process GUID | Target Filename |",
-            "|---|---|---|---|",
-        ])
-        for artifact in sorted(file_creations, key=lambda item: _parse_timestamp(item["timestamp"])):
+        lines.extend(
+            [
+                "| Timestamp (UTC) | Process | Process GUID | Target Filename |",
+                "|---|---|---|---|",
+            ]
+        )
+        for artifact in sorted(
+            file_creations, key=lambda item: _parse_timestamp(item["timestamp"])
+        ):
             lines.append(
                 f"| {_markdown_cell(artifact.get('timestamp'))} "
                 f"| `{_markdown_cell(ntpath.basename(artifact.get('image', '')) or 'Unknown')}` "
@@ -156,18 +238,24 @@ def build_evidence_traceability(pkg):
                 f"| `{_markdown_cell(artifact.get('target_filename'))}` |"
             )
     else:
-        lines.append("No file creation events were collected for the correlated processes.")
+        lines.append(
+            "No file creation events were collected for the correlated processes."
+        )
     lines.append(
         "No observed file creation event in this evidence package independently confirms creation of a SAM, SYSTEM, or SECURITY hive output file unless such a path is explicitly listed above."
     )
 
     lines.extend(["", "#### Observed Registry Set Events"])
     if registry_sets:
-        lines.extend([
-            "| Timestamp (UTC) | Process | Process GUID | Target Object | Details |",
-            "|---|---|---|---|---|",
-        ])
-        for artifact in sorted(registry_sets, key=lambda item: _parse_timestamp(item["timestamp"])):
+        lines.extend(
+            [
+                "| Timestamp (UTC) | Process | Process GUID | Target Object | Details |",
+                "|---|---|---|---|---|",
+            ]
+        )
+        for artifact in sorted(
+            registry_sets, key=lambda item: _parse_timestamp(item["timestamp"])
+        ):
             lines.append(
                 f"| {_markdown_cell(artifact.get('timestamp'))} "
                 f"| `{_markdown_cell(ntpath.basename(artifact.get('image', '')) or 'Unknown')}` "
@@ -179,19 +267,24 @@ def build_evidence_traceability(pkg):
             "These registry events are reported for completeness. Their presence does not establish a relationship to the triggering activity without additional evidence."
         )
     else:
-        lines.append("No registry set events were collected for the correlated processes.")
+        lines.append(
+            "No registry set events were collected for the correlated processes."
+        )
 
     return "\n".join(lines)
+
 
 def build_attack_mapping(pkg, retrieved_passages):
     """Render ATT&CK names deterministically from retrieved Chroma metadata."""
     technique_names, technique_sources = resolve_technique_metadata(retrieved_passages)
     alert = pkg.get("trigger_alert", {})
-    technique_ids = list(dict.fromkeys(
-        pkg.get("analysis_techniques")
-        or pkg.get("detector_techniques")
-        or alert.get("mitre_id", [])
-    ))
+    technique_ids = list(
+        dict.fromkeys(
+            pkg.get("analysis_techniques")
+            or pkg.get("detector_techniques")
+            or alert.get("mitre_id", [])
+        )
+    )
     lines = [
         "#### Authoritative ATT&CK Mapping",
         "| Technique ID | Canonical technique name | Local knowledge source |",
@@ -199,8 +292,12 @@ def build_attack_mapping(pkg, retrieved_passages):
     ]
     if technique_ids:
         for technique_id in technique_ids:
-            canonical_name = technique_names.get(technique_id, "Name unavailable in retrieved Chroma metadata")
-            source = technique_sources.get(technique_id, "Not available in retrieved passages")
+            canonical_name = technique_names.get(
+                technique_id, "Name unavailable in retrieved Chroma metadata"
+            )
+            source = technique_sources.get(
+                technique_id, "Not available in retrieved passages"
+            )
             lines.append(
                 f"| `{_markdown_cell(technique_id)}` "
                 f"| {_markdown_cell(canonical_name)} "
@@ -214,6 +311,7 @@ def build_attack_mapping(pkg, retrieved_passages):
     )
     return "\n".join(lines)
 
+
 def inject_timeline(report, timeline):
     """Replace the model placeholder, or its Section 2 body, with the exact timeline."""
     if TIMELINE_PLACEHOLDER in report:
@@ -224,12 +322,15 @@ def inject_timeline(report, timeline):
         flags=re.MULTILINE | re.DOTALL,
     )
     if not section_pattern.search(report):
-        raise ValueError("Generated report omitted the required Section 2 timeline location")
+        raise ValueError(
+            "Generated report omitted the required Section 2 timeline location"
+        )
     return section_pattern.sub(
         lambda match: f"{match.group(1)}\n\n{timeline}\n\n",
         report,
         count=1,
     )
+
 
 def inject_traceability(report, traceability):
     """Replace the model's Section 3 body with deterministic evidence traceability."""
@@ -241,12 +342,15 @@ def inject_traceability(report, traceability):
         flags=re.MULTILINE | re.DOTALL,
     )
     if not section_pattern.search(report):
-        raise ValueError("Generated report omitted the required Section 3 traceability location")
+        raise ValueError(
+            "Generated report omitted the required Section 3 traceability location"
+        )
     return section_pattern.sub(
         lambda match: f"{match.group(1)}\n\n{traceability}\n\n",
         report,
         count=1,
     )
+
 
 def inject_attack_mapping(report, attack_mapping):
     """Replace the model's Section 4 body with the knowledge-derived mapping."""
@@ -258,22 +362,27 @@ def inject_attack_mapping(report, attack_mapping):
         flags=re.MULTILINE | re.DOTALL,
     )
     if not section_pattern.search(report):
-        raise ValueError("Generated report omitted the required Section 4 ATT&CK mapping location")
+        raise ValueError(
+            "Generated report omitted the required Section 4 ATT&CK mapping location"
+        )
     return section_pattern.sub(
         lambda match: f"{match.group(1)}\n\n{attack_mapping}\n\n",
         report,
         count=1,
     )
 
+
 def format_evidence_summary(pkg, technique_names=None):
-    """Formats raw Sysmon JSON payload into structured text blocks for strictly grounded telemetry LLM reasoning."""
+    """Format the Sysmon JSON payload as structured text for the model."""
     alert = pkg.get("trigger_alert", {})
     tree = pkg.get("process_tree", [])
     artifacts = pkg.get("artifacts", {})
     detector_techniques = pkg.get("detector_techniques", alert.get("mitre_id", []))
     analysis_techniques = pkg.get("analysis_techniques", detector_techniques)
-    authoritative_labels = format_technique_labels(analysis_techniques, technique_names or {})
-    
+    authoritative_labels = format_technique_labels(
+        analysis_techniques, technique_names or {}
+    )
+
     summary_lines = [
         f"- Trigger Rule: {alert.get('rule_description')} (Rule Level {alert.get('rule_level')})",
         f"- Trigger Rule ID: {alert.get('rule_id')}",
@@ -284,9 +393,9 @@ def format_evidence_summary(pkg, technique_names=None):
         f"- Trigger Process GUID: {alert.get('process_guid')}",
         f"- Trigger Parent Process GUID: {alert.get('parent_guid')}",
         f"- Trigger Command Line: {alert.get('command_line')}",
-        "\n--- Process Execution Lineage ---"
+        "\n--- Process Execution Lineage ---",
     ]
-    
+
     for proc in tree:
         summary_lines.append(
             f"  * Event Type: Observed Process Creation\n"
@@ -296,7 +405,7 @@ def format_evidence_summary(pkg, technique_names=None):
             f"    PID: {proc.get('process_id')} | Image: {proc.get('image')} | User: {proc.get('user')} | Integrity: {proc.get('integrity_level')}\n"
             f"    CmdLine: {proc.get('command_line')}"
         )
-        
+
     summary_lines.append("\n--- File Creation Artifacts ---")
     file_creations = artifacts.get("file_creations", [])
     if file_creations:
@@ -309,8 +418,10 @@ def format_evidence_summary(pkg, technique_names=None):
                 f"    Target Filename: {f.get('target_filename')}"
             )
     else:
-        summary_lines.append("  * No file creation events were collected for the correlated processes.")
-        
+        summary_lines.append(
+            "  * No file creation events were collected for the correlated processes."
+        )
+
     summary_lines.append("\n--- Registry Set Artifacts ---")
     registry_sets = artifacts.get("registry_sets", [])
     if registry_sets:
@@ -323,48 +434,70 @@ def format_evidence_summary(pkg, technique_names=None):
                 f"    Target Object: {r.get('target_object')} | Details: {r.get('details')}"
             )
     else:
-        summary_lines.append("  * No registry set events were collected for the correlated processes.")
+        summary_lines.append(
+            "  * No registry set events were collected for the correlated processes."
+        )
 
-    summary_lines.extend([
-        "\n--- Collection Coverage and Limitations ---",
-        "  * Process creation telemetry: Collected (Sysmon Event ID 1).",
-        "  * File creation telemetry: Collected where present (Sysmon Event ID 11).",
-        "  * Registry set telemetry: Collected where present (Sysmon Event ID 13).",
-        "  * File deletion telemetry: Not collected; deletion success cannot be confirmed.",
-        "  * Network telemetry: Not collected; command-and-control, lateral movement, and exfiltration cannot be assessed.",
-        "  * Process exit codes: Not collected; command success cannot be confirmed from process creation alone.",
-    ])
-        
+    summary_lines.extend(
+        [
+            "\n--- Collection Coverage and Limitations ---",
+            "  * Process creation telemetry: Collected (Sysmon Event ID 1).",
+            "  * File creation telemetry: Collected where present (Sysmon Event ID 11).",
+            "  * Registry set telemetry: Collected where present (Sysmon Event ID 13).",
+            "  * File deletion telemetry: Not collected; deletion success cannot be confirmed.",
+            "  * Network telemetry: Not collected; command-and-control, lateral movement, and exfiltration cannot be assessed.",
+            "  * Process exit codes: Not collected; command success cannot be confirmed from process creation alone.",
+        ]
+    )
+
     return "\n".join(summary_lines)
 
+
 def generate_forensic_report(evidence_json_path, model_name=None):
-    """
-    Ingests Phase 3 JSON evidence + Phase 4 RAG retrieved context,
-    invokes local Ollama LLM, and generates an explainable DFIR report.
-    """
+    """Generate a report from JSON evidence and locally retrieved context."""
     model_name = model_name or OLLAMA_MODEL
-    if not os.path.exists(evidence_json_path):
+    evidence_path = Path(evidence_json_path)
+    output_report_path = _derive_report_path(evidence_path)
+    if not evidence_path.exists():
         raise FileNotFoundError(f"Evidence JSON file not found: {evidence_json_path}")
+    if not evidence_path.is_file():
+        raise ValueError(f"Evidence JSON path is not a file: {evidence_json_path}")
 
     start_t = time.time()
-    print(f"\n==================================================")
-    print(f"   ForenRAG Phase 5 Investigation Reasoning Engine")
+    print("\n==================================================")
+    print("   ForenRAG Investigation Reasoning Engine")
     print(f"   Target Evidence Package: {evidence_json_path}")
     print(f"   Ollama Local LLM Model: {model_name}")
-    print(f"==================================================\n")
+    print("==================================================\n")
 
-    # Step 1: Retrieve RAG Knowledge Context from ChromaDB (Phase 4)
+    try:
+        with evidence_path.open("r", encoding="utf-8") as f:
+            pkg = json.load(f)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Invalid evidence JSON in {evidence_path} at line {exc.lineno}, "
+            f"column {exc.colno}: {exc.msg}"
+        ) from exc
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            f"Evidence JSON must be UTF-8 encoded: {evidence_path} (byte {exc.start})"
+        ) from exc
+    if not isinstance(pkg, dict):
+        raise TypeError(
+            f"Evidence JSON must contain an object at the top level: {evidence_path}"
+        )
+
     retrieved_passages, query_str = retrieve_rag_context(evidence_json_path)
-    kb_context = "\n\n".join([f"--- Knowledge Chunk ({p['source']}) ---\n{p['content']}" for p in retrieved_passages])
-
-    # Step 2: Read Evidence Package JSON & Format Text Summary
-    with open(evidence_json_path, "r", encoding="utf-8") as f:
-        pkg = json.load(f)
+    kb_context = "\n\n".join(
+        [
+            f"--- Knowledge Chunk ({p['source']}) ---\n{p['content']}"
+            for p in retrieved_passages
+        ]
+    )
 
     technique_names, _ = resolve_technique_metadata(retrieved_passages)
     evidence_text = format_evidence_summary(pkg, technique_names)
 
-    # Step 3: Define Explainable DFIR Grounding Prompt Template
     prompt_template = """You are ForenRAG, an expert Digital Forensics and Incident Response (DFIR) analyst.
 Analyze the endpoint evidence and use the retrieved knowledge only to explain observed behavior and recommend response actions. Generate a professional, precise, and evidence-grounded report.
 
@@ -408,7 +541,7 @@ FORENSIC REPORT:"""
 
     prompt = PromptTemplate(
         input_variables=["analysis_date", "evidence_text", "rag_context"],
-        template=prompt_template
+        template=prompt_template,
     )
 
     print(f"\n[+] Invoking Ollama LLM Model '{model_name}' via LangChain...")
@@ -421,15 +554,17 @@ FORENSIC REPORT:"""
     )
 
     formatted_prompt = prompt.format(
-        analysis_date=datetime.now(timezone.utc).date().isoformat(),
+        analysis_date=datetime.now(UTC).date().isoformat(),
         evidence_text=evidence_text,
-        rag_context=kb_context
+        rag_context=kb_context,
     )
 
     response = llm.invoke(formatted_prompt)
     response = inject_timeline(response, build_timeline_table(pkg))
     response = inject_traceability(response, build_evidence_traceability(pkg))
-    response = inject_attack_mapping(response, build_attack_mapping(pkg, retrieved_passages))
+    response = inject_attack_mapping(
+        response, build_attack_mapping(pkg, retrieved_passages)
+    )
 
     print("\n==================================================")
     print("   GENERATED EXPLAINABLE FORENSIC INVESTIGATION REPORT")
@@ -438,45 +573,47 @@ FORENSIC REPORT:"""
 
     reasoning_latency = round(time.time() - start_t, 3)
     coll_latency = pkg.get("collection_latency_seconds", 0.0)
-    total_latency = round(coll_latency + reasoning_latency, 3)
+    try:
+        total_latency = round(coll_latency + reasoning_latency, 3)
+    except TypeError as exc:
+        raise ValueError(
+            "Evidence field 'collection_latency_seconds' must be numeric, "
+            f"got {coll_latency!r}"
+        ) from exc
 
-    # Persist RAG and reasoning metrics into evidence.json for empirical automated extraction
     pkg["rag_query"] = query_str
     pkg["rag_passages"] = retrieved_passages
     pkg["reasoning_latency_seconds"] = reasoning_latency
     pkg["total_latency_seconds"] = total_latency
-    with open(evidence_json_path, "w", encoding="utf-8") as f:
-        json.dump(pkg, f, indent=2)
+    _atomic_write_text(evidence_path, json.dumps(pkg, indent=2))
 
-    metrics_footer = f"\n\n---\n\n### 📊 Experimental Benchmark Latency Metrics\n" \
-                     f"* **Collection Latency ($L_{{\\text{{coll}}}}$):** `{coll_latency}` seconds\n" \
-                     f"* **Reasoning Latency ($L_{{\\text{{reason}}}}$):** `{reasoning_latency}` seconds\n" \
-                     f"* **Total ForenRAG Latency ($T_{{\\text{{automated}}}}$):** `{total_latency}` seconds\n"
+    metrics_footer = (
+        f"\n\n---\n\n### 📊 Experimental Benchmark Latency Metrics\n"
+        f"* **Collection Latency ($L_{{\\text{{coll}}}}$):** `{coll_latency}` seconds\n"
+        f"* **Reasoning Latency ($L_{{\\text{{reason}}}}$):** `{reasoning_latency}` seconds\n"
+        f"* **Total ForenRAG Latency ($T_{{\\text{{automated}}}}$):** `{total_latency}` seconds\n"
+    )
 
     full_report_content = response + metrics_footer
 
-    # Step 4: Save Report Artifact in same directory as evidence JSON
-    if os.path.basename(evidence_json_path) == "evidence.json":
-        output_report_path = os.path.join(os.path.dirname(evidence_json_path), "forensic_report.md")
-    else:
-        output_report_path = evidence_json_path.replace(".json", "_report.md")
+    _atomic_write_text(output_report_path, full_report_content)
 
-    with open(output_report_path, "w", encoding="utf-8") as f:
-        f.write(full_report_content)
+    print(f"\nSaved Report Artifact to: {output_report_path}")
 
-    print(f"\n[✔] Saved Report Artifact to: {output_report_path}")
-
-    print(f"\n==================================================")
-    print(f"   📊 EXPERIMENTAL BENCHMARK LATENCY METRICS")
+    print("\n==================================================")
+    print("   Experimental Benchmark Latency Metrics")
     print(f"   - Collection Latency (L_coll)  : {coll_latency}s")
     print(f"   - Reasoning Latency (L_reason) : {reasoning_latency}s")
     print(f"   - Total ForenRAG Latency       : {total_latency}s")
-    print(f"==================================================\n")
+    print("==================================================\n")
 
     return full_report_content
 
+
 if __name__ == "__main__":
-    evidence_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "evidence_packages")
+    evidence_dir = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "evidence_packages"
+    )
     json_files = []
     for root, _, files in os.walk(evidence_dir):
         for f in files:
@@ -486,7 +623,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         test_file = sys.argv[1]
     elif json_files:
-        test_file = sorted(json_files)[-1]
+        test_file = max(json_files)
     else:
         print("[!] No evidence JSON files found in evidence_packages/")
         sys.exit(1)
