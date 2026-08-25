@@ -14,6 +14,7 @@ authors:
     orcid: "https://orcid.org/0009-0007-2474-7343"
 version: 0.1.0
 date-released: 2026-08-25
+doi: 10.5281/zenodo.22088855
 repository-code: "https://github.com/viejopeter/ForenRAG"
 url: "https://github.com/viejopeter/ForenRAG"
 license: Apache-2.0

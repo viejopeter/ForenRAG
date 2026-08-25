@@ -2,6 +2,8 @@
 
 **An Event-Driven Retrieval-Augmented Framework for Provenance-Oriented Post-Alert Digital Forensic Investigation**
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22088854.svg)](https://doi.org/10.5281/zenodo.22088854)
+
 ForenRAG is a research prototype for automated post-alert digital forensic investigation in a controlled Windows laboratory. It receives high-severity Wazuh alerts, correlates them with Sysmon telemetry in OpenSearch, creates a structured evidence package, retrieves technique-relevant defensive knowledge from a local ChromaDB index, and uses a locally hosted Ollama model to produce a Markdown forensic report.
 
 The framework supports inspection and repeatable laboratory evaluation of post-detection evidence collection and report generation. It is not a production incident-response platform, and model-generated conclusions must be reviewed by a qualified analyst.
@@ -528,6 +530,10 @@ Generated ChromaDB files are excluded because they contain embedded representati
 
 - Verify source technique metadata and inspect the generated `rag_query` and `rag_passages`.
 - Rebuild ChromaDB after changing the corpus, embedding model, or chunk settings.
+
+## Citation
+
+The archived `v0.1.0` release is available at [https://doi.org/10.5281/zenodo.22088855](https://doi.org/10.5281/zenodo.22088855). Citation metadata is also provided in [`CITATION.cff`](CITATION.cff).
 
 ## Author
 
