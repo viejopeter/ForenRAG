@@ -68,6 +68,7 @@ Wazuh Agent -> Wazuh Manager / OpenSearch
 | `forenrag_reasoner.py` | Evidence formatting, prompt construction, Ollama inference, deterministic report sections, and latency persistence |
 | `technique_inference.py` | Normalization of detector-supplied ATT&CK labels and scenario-specific T1105 inference from correlated GUP activity |
 | `knowledge_base/` | Local Markdown and YAML sources used to build the retrieval index |
+| `study_dataset/` | Sanitised trial-level timing, collector-validation, retrieval, phase-duration, and report-grounding data supporting the manuscript |
 
 ## Requirements
 
@@ -475,9 +476,32 @@ The study trials were conducted with the following laboratory environment:
 | Victim endpoint VM | Windows 11 Enterprise Evaluation; 4 vCPU, 8192 MB RAM, 80 GB storage | Sysmon 15.21, Wazuh Agent 4.14.6, Atomic Red Team, PowerShell |
 | Security services VM | Ubuntu 24.04.4; 4 vCPU, 6037 MB RAM, 60 GB storage | Wazuh Manager 4.14.6, OpenSearch 2.19.5 |
 
-## Data Availability
+## Experiment Reproducibility
 
-Generated study evidence packages and reports are not distributed because they contain security-sensitive laboratory telemetry and system identifiers. The repository provides the source code, bundled knowledge sources, scenario commands, and laboratory environment description.
+The reported experiments used the following local Ollama models:
+
+| Model Name / Tag | Model ID | Exact SHA-256 Digest | Size | Role in ForenRAG |
+|---|---|---|---|---|
+| `gemma4:e2b` | `7fbdbf8f5e45` | `sha256:4e30e2665218745ef463f722c0bf86be0cab6ee676320f1cfadf91e989107448` | 7.2 GB | Reasoner / Forensic Report Generator |
+| `nomic-embed-text:latest` | `0a109f422b47` | `sha256:970aa74c0a90ef7482477cf803618e776e173c007bf957f635f1015bfcfef0e6` | 274 MB | ChromaDB Embedding Model (768 dim) |
+
+### ChromaDB Index Snapshot (`chroma_db_storage/`)
+
+| Index parameter | Value |
+|---|---|
+| Collection Name | `forenrag_kb` |
+| Collection UUID | `bc1c1ef9-4268-4143-b0d7-991e8e5eadab` |
+| Total Chunks Indexed | 392 chunks |
+| Vector Dimensions | 768 (L2 Distance / HNSW metric) |
+| Text Splitter Settings | `chunk_size=1000`, `chunk_overlap=150` |
+
+The generated index is not distributed; rebuild it from the tracked `knowledge_base/` sources with `uv run python build_chroma_db.py`. The index snapshot used for the experiments had SHA-256 `c5704942a28e416b1ccace01ba073e128eb906da86ef591c483de0875d6b4a76` for `chroma_db_storage/chroma.sqlite3`.
+
+## Study Dataset
+
+The [`study_dataset/`](study_dataset/) directory contains the sanitised trial-level data supporting the aggregate results reported in the ForenRAG manuscript. It includes timing, reference-review phase, collector-validation, retrieval, report-grounding, and major-error-category data together with definitions and calculation notes.
+
+Raw OpenSearch exports, structured evidence packages, and complete investigation reports are not distributed because they contain security-sensitive laboratory telemetry and system identifiers.
 
 ## Known Limitations
 
@@ -511,6 +535,8 @@ Original ForenRAG source code is licensed under the [Apache License 2.0](LICENSE
 
 The `knowledge_base/` directory includes third-party Atomic Red Team and LOLBAS material, MITRE ATT&CK descriptions, and project-authored incident-response notes informed by CISA and NIST guidance. Third-party material remains subject to its applicable terms and is not relicensed by the ForenRAG Apache license. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for provenance, licenses, and attribution.
 
+The sanitised research data under `study_dataset/` are licensed separately under the [Creative Commons Attribution 4.0 International licence](study_dataset/LICENSE). The dataset licence does not apply to the ForenRAG software or third-party knowledge sources.
+
 Generated ChromaDB files are excluded because they contain embedded representations of the source corpus.
 
 ## Troubleshooting
@@ -533,7 +559,7 @@ Generated ChromaDB files are excluded because they contain embedded representati
 
 ## Citation
 
-The archived `v0.1.0` release is available at [https://doi.org/10.5281/zenodo.22088855](https://doi.org/10.5281/zenodo.22088855). Citation metadata is also provided in [`CITATION.cff`](CITATION.cff).
+Archived ForenRAG releases are available through Zenodo at [https://doi.org/10.5281/zenodo.22088854](https://doi.org/10.5281/zenodo.22088854). Citation metadata is also provided in [`CITATION.cff`](CITATION.cff).
 
 ## Author
 

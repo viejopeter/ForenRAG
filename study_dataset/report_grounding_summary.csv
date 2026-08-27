@@ -1,0 +1,16 @@
+trial_id,scenario_id,repetition,attack_technique,total_claims,assessable_claims,supported_claims,partially_supported_claims,unsupported_claims,contradicted_claims,not_assessable_claims,strict_evidence_support_percent,unsupported_or_contradicted_percent,traceable_claims,traceability_percent,expected_findings_covered,expected_findings_total,completeness_percent,attack_metadata_consistent,major_error_count
+T01-S1,S1,1,T1003.002,15,15,14,0,1,0,0,93.3,6.7,12,80,6,6,100,TRUE,1
+T01-S2,S2,1,T1059.001,16,16,12,0,1,3,0,75,25,10,62.5,6,6,100,TRUE,3
+T01-S3,S3,1,T1105,13,13,10,0,2,1,0,76.9,23.1,7,53.8,5,6,83.3,TRUE,3
+T01-S4,S4,1,T1053.005,13,13,10,0,2,1,0,76.9,23.1,8,61.5,6,6,100,TRUE,3
+T01-S5,S5,1,T1547.001,16,16,10,3,0,3,0,62.5,18.8,12,75,6,6,100,TRUE,3
+T02-S1,S1,2,T1003.002,13,13,12,1,0,0,0,92.3,0,9,69.2,6,6,100,TRUE,0
+T02-S2,S2,2,T1059.001,17,16,14,1,0,1,1,87.5,6.3,9,56.3,6,6,100,TRUE,0
+T02-S3,S3,2,T1105,14,14,12,1,1,0,0,85.7,7.1,7,50,6,6,100,TRUE,1
+T02-S4,S4,2,T1053.005,13,13,11,0,2,0,0,84.6,15.4,5,38.5,6,6,100,TRUE,2
+T02-S5,S5,2,T1547.001,19,19,9,3,3,4,0,47.4,36.8,13,68.4,5,6,83.3,FALSE,3
+T03-S1,S1,3,T1003.002,14,13,12,1,0,0,1,92.3,0,10,76.9,6,6,100,TRUE,0
+T03-S2,S2,3,T1059.001,12,11,9,2,0,0,1,81.8,0,8,72.7,6,6,100,TRUE,0
+T03-S3,S3,3,T1105,12,10,9,1,0,0,2,90,0,9,90,6,6,100,TRUE,0
+T03-S4,S4,3,T1053.005,12,10,9,1,0,0,2,90,0,8,80,6,6,100,TRUE,0
+T03-S5,S5,3,T1547.001,14,13,8,2,1,2,1,61.5,23.1,13,100,6,6,100,TRUE,2
