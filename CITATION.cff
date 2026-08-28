@@ -6,15 +6,16 @@ abstract: >-
   ForenRAG is a research prototype for automated post-alert digital forensic
   investigation. It correlates Wazuh alerts with Sysmon telemetry, creates
   structured evidence packages, retrieves local defensive knowledge, and uses
-  a locally hosted language model to generate forensic reports. Version 0.1.1
-  includes sanitised study data and expanded reproducibility provenance.
+  a locally hosted language model to generate forensic reports. Version 0.1.2
+  includes sanitised study data, matched RAG/no-RAG ablation results, and
+  expanded reproducibility provenance.
 authors:
   - family-names: "Quinchanegua Sanchez"
     given-names: "Pedro Antonio"
     affiliation: "Torrens University Australia"
     orcid: "https://orcid.org/0009-0007-2474-7343"
-version: 0.1.1
-date-released: 2026-08-27
+version: 0.1.2
+date-released: 2026-08-28
 doi: 10.5281/zenodo.22088854
 repository-code: "https://github.com/viejopeter/ForenRAG"
 url: "https://github.com/viejopeter/ForenRAG"

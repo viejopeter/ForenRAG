@@ -68,7 +68,7 @@ Wazuh Agent -> Wazuh Manager / OpenSearch
 | `forenrag_reasoner.py` | Evidence formatting, prompt construction, Ollama inference, deterministic report sections, and latency persistence |
 | `technique_inference.py` | Normalization of detector-supplied ATT&CK labels and scenario-specific T1105 inference from correlated GUP activity |
 | `knowledge_base/` | Local Markdown and YAML sources used to build the retrieval index |
-| `study_dataset/` | Sanitised trial-level timing, collector-validation, retrieval, phase-duration, and report-grounding data supporting the manuscript |
+| `study_dataset/` | Sanitised trial-level timing, collector-validation, retrieval, phase-duration, report-grounding, major-error-category, and matched RAG/no-RAG ablation data supporting the manuscript |
 
 ## Requirements
 
@@ -499,7 +499,7 @@ The generated index is not distributed; rebuild it from the tracked `knowledge_b
 
 ## Study Dataset
 
-The [`study_dataset/`](study_dataset/) directory contains the sanitised trial-level data supporting the aggregate results reported in the ForenRAG manuscript. It includes timing, reference-review phase, collector-validation, retrieval, report-grounding, and major-error-category data together with definitions and calculation notes.
+The [`study_dataset/`](study_dataset/) directory contains the sanitised trial-level data supporting the aggregate results reported in the ForenRAG manuscript. It includes timing, reference-review phase, collector-validation, retrieval, report-grounding, major-error-category, and matched RAG/no-RAG ablation data together with definitions and calculation notes. The ablation dataset contains 30 report-level observations forming 15 matched RAG/no-RAG pairs.
 
 Raw OpenSearch exports, structured evidence packages, and complete investigation reports are not distributed because they contain security-sensitive laboratory telemetry and system identifiers.
 

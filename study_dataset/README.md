@@ -12,6 +12,7 @@ The study comprised 15 matched laboratory trials: five Windows adversary-emulati
 - `report_grounding_summary.csv`: trial-level aggregate results from the AI-assisted, author-reviewed assessment of the 15 ForenRAG reports.
 - `major_error_categories.csv`: trial-level counts for the six consolidated major-error categories reported in the manuscript.
 - `retrieval_summary.csv`: trial-level passage counts, analysis-technique alignment, and retrieved source filenames.
+- `rag_ablation_results.csv`: sanitised report-level scores for the 15 matched RAG/no-RAG pairs, including condition order, retrieved-source records, four predefined narrative-quality dimensions, total score, and major-error count.
 
 The package intentionally excludes raw OpenSearch exports, evidence packages, complete reports, exact event timestamps, host and user identifiers, process identifiers and GUIDs, internal addresses, and absolute laboratory paths.
 
@@ -99,6 +100,18 @@ From `retrieval_summary.csv`:
 - retrieved passages: 45, with three passages per package;
 - unique source filenames represented in the retrieved passages: 7;
 - passages carrying the scenario analysis-technique metadata label: 45 of 45.
+
+## Matched RAG/no-RAG ablation definitions
+
+The ablation reused the 15 structured evidence packages and generated one RAG and one no-RAG output for each package. The RAG condition received three retrieved passages; the no-RAG condition received none. The four narrative dimensions use ordinal scores from 0 to 2: 0 denotes a materially incorrect or absent treatment, 1 denotes a partially correct but incomplete or overextended treatment, and 2 denotes a correct, appropriately bounded treatment. `total_score` is their sum from 0 to 8. `major_error_count` records materially consequential errors separately.
+
+From `rag_ablation_results.csv`:
+
+- mean total score: 6.733 without RAG and 7.267 with RAG;
+- mean ATT&CK-contextualisation score: 1.533 without RAG and 2.000 with RAG;
+- total-score paired directions: RAG higher in 6, tied in 4, and lower in 5 pairs;
+- ATT&CK-context paired directions: RAG higher in 4, tied in 11, and lower in 0 pairs;
+- major-error decisions: 5 in each condition.
 
 ## Licence
 

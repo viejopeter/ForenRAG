@@ -1,6 +1,6 @@
 {
   "title": "ForenRAG: An Event-Driven Retrieval-Augmented Framework for Provenance-Oriented Post-Alert Digital Forensic Investigation",
-  "description": "<p>ForenRAG is a research prototype for automated post-alert digital forensic investigation in a controlled Windows laboratory. It correlates high-severity Wazuh alerts with Sysmon telemetry in OpenSearch, creates structured evidence packages, retrieves technique-relevant knowledge from ChromaDB, and uses a local Ollama model to generate forensic reports.</p><p>Version 0.1.1 adds sanitised trial-level study data, reproducibility metadata, commit-pinned knowledge-source provenance, and expanded third-party notices without changing the reported experimental results.</p><p>Original ForenRAG source code is licensed under Apache-2.0. Sanitised data under study_dataset/ are licensed under CC BY 4.0. Bundled third-party knowledge sources retain the separate licences and terms documented in THIRD_PARTY_NOTICES.md.</p>",
+  "description": "<p>ForenRAG is a research prototype for automated post-alert digital forensic investigation in a controlled Windows laboratory. It correlates high-severity Wazuh alerts with Sysmon telemetry in OpenSearch, creates structured evidence packages, retrieves technique-relevant knowledge from ChromaDB, and uses a local Ollama model to generate forensic reports.</p><p>Version 0.1.2 adds the sanitised 30-row matched RAG/no-RAG ablation dataset and updates the accompanying dataset documentation. The release retains the trial-level timing, collector-validation, retrieval, reference-review phase, report-grounding, major-error-category, reproducibility, and knowledge-source provenance materials introduced in version 0.1.1.</p><p>Original ForenRAG source code is licensed under Apache-2.0. Sanitised data under study_dataset/ are licensed under CC BY 4.0. Bundled third-party knowledge sources retain the separate licences and terms documented in THIRD_PARTY_NOTICES.md.</p>",
   "creators": [
     {
       "name": "Quinchanegua Sanchez, Pedro Antonio",
@@ -22,6 +22,6 @@
   "access_right": "open",
   "license": "other-open",
   "upload_type": "software",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "language": "eng"
 }
